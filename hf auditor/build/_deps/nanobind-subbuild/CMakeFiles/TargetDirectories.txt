@@ -1,0 +1,3 @@
+D:/Paygorn/Paygorn/hf auditor/build/_deps/nanobind-subbuild/CMakeFiles/nanobind-populate.dir
+D:/Paygorn/Paygorn/hf auditor/build/_deps/nanobind-subbuild/CMakeFiles/edit_cache.dir
+D:/Paygorn/Paygorn/hf auditor/build/_deps/nanobind-subbuild/CMakeFiles/rebuild_cache.dir

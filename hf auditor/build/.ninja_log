@@ -1,0 +1,16 @@
+# ninja log v7
+90	12214	7968277924832774	CMakeFiles/nanobind-static.dir/_deps/nanobind-src/src/implicit.cpp.obj	33087fe3ca493812
+80	12300	7968277924724114	CMakeFiles/nanobind-static.dir/_deps/nanobind-src/src/trampoline.cpp.obj	9aaf2a6006d54793
+50	12301	7968277924445709	CMakeFiles/nanobind-static.dir/_deps/nanobind-src/src/nb_static_property.cpp.obj	25b354ddcf230b35
+69	13062	7968277924622393	CMakeFiles/nanobind-static.dir/_deps/nanobind-src/src/error.cpp.obj	d698b46543ab2be7
+40	15108	7968277924304503	CMakeFiles/nanobind-static.dir/_deps/nanobind-src/src/nb_ndarray.cpp.obj	f95bb9c2952f2c22
+60	15472	7968277924526121	CMakeFiles/nanobind-static.dir/_deps/nanobind-src/src/common.cpp.obj	576486607424d7b4
+12255	15521	7968278046582214	CMakeFiles/hft_auditor.dir/src/auditor.cpp.obj	15a20cccf447891f
+3	16311	7968277923936214	CMakeFiles/nanobind-static.dir/_deps/nanobind-src/src/nb_internals.cpp.obj	683670b2ef7186f
+13	16475	7968277924068364	CMakeFiles/nanobind-static.dir/_deps/nanobind-src/src/nb_func.cpp.obj	9f1e3b3cb0b21125
+31	16477	7968277924243799	CMakeFiles/nanobind-static.dir/_deps/nanobind-src/src/nb_enum.cpp.obj	f73f2f185dbbe56
+21	17269	7968277924137753	CMakeFiles/nanobind-static.dir/_deps/nanobind-src/src/nb_type.cpp.obj	274922cc5bd8aab
+17269	17758	7968278096628409	libnanobind-static.a	29646c123abd93a4
+17758	18232	7968278101520288	hft_auditor.cp313-win_amd64.pyd	83191ec08a74b424
+71	3006	7968284822499069	CMakeFiles/hft_auditor.dir/src/auditor.cpp.obj	15a20cccf447891f
+3008	3244	7968284851868016	hft_auditor.cp313-win_amd64.pyd	83191ec08a74b424

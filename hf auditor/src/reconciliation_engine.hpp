@@ -1,0 +1,414 @@
+#pragma once
+// ============================================================================
+// ReconciliationEngine — Orchestrator for HFT Trade Reconciliation
+// ============================================================================
+//
+// This is the top-level class that owns all three subsystems:
+//   1. OrderPool          — O(1) flat-array trade storage
+//   2. TimerWheel         — O(1) hierarchical expiration
+//   3. SPSCRingBuffer     — Lock-free ingestion from producer thread
+//
+// THREADING MODEL:
+//   ┌─────────────────┐         ┌─────────────────────────────────┐
+//   │ Ingestion Thread │  SPSC   │ Engine Thread (Python's thread) │
+//   │ (producer)       │ ──────→ │ tick() → drain → insert → expire│
+//   │ submit_trade()   │ ring    │ reconcile() → match receipts    │
+//   │                  │ buffer  │ get_observation_matrix() → RL   │
+//   └─────────────────┘         └─────────────────────────────────┘
+//
+// The SPSC ring buffer is the ONLY shared data structure between threads.
+// Everything else (OrderPool, TimerWheel, observation matrix) is accessed
+// exclusively from the engine thread — no locks needed.
+//
+// OBSERVATION MATRIX (for the RL agent):
+//   Shape: (N_active_trades, 4) — zero-copy exposed via nb::ndarray
+//   Columns:
+//     [0] time_elapsed     — (watermark - trade_ts) / Δ_max, normalized 0.0–1.0+
+//     [1] price_delta      — 0.0 (placeholder; populated during reconcile mismatches)
+//     [2] missing_frequency — total_expired / total_ingested, global ratio
+//     [3] risk_score       — (counterparty_id % 100) / 100.0, per-counterparty hash
+//
+//   This matches Soham's FinAuditorObservation.features schema:
+//   List[List[StrictFloat]] with 4 features per anomaly.
+//
+// ============================================================================
+
+#include "order_pool.hpp"
+#include "timer_wheel.hpp"
+#include "spsc_ring_buffer.hpp"
+
+#include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
+
+#include <vector>
+#include <cstdint>
+#include <iostream>
+
+namespace nb = nanobind;
+
+// ────────────────────────────────────────────────────────────────────────────
+// Ring buffer capacity: 2^21 = 2,097,152 slots
+//
+// At 1M trades/sec, this gives 2 seconds of buffering headroom against
+// OS scheduling preemptions or network micro-bursts.
+// ────────────────────────────────────────────────────────────────────────────
+static constexpr size_t RING_BUFFER_CAPACITY = 1ULL << 21;  // 2,097,152
+
+// ────────────────────────────────────────────────────────────────────────────
+// ReconcileResult — Outcome of a reconciliation attempt
+// ────────────────────────────────────────────────────────────────────────────
+enum class ReconcileResult : uint8_t {
+    MATCH          = 0,   // Trade matches bank receipt — success
+    PRICE_MISMATCH = 1,   // Price field differs — anomaly
+    QTY_MISMATCH   = 2,   // Quantity field differs — anomaly
+    NOT_FOUND      = 3,   // Trade ID not in pool (wrong ID or already evicted)
+    ALREADY_DONE   = 4    // Trade already reconciled or expired
+};
+
+// ────────────────────────────────────────────────────────────────────────────
+// ReconciliationEngine — The main orchestrator
+// ────────────────────────────────────────────────────────────────────────────
+class ReconciliationEngine {
+public:
+    // ────────────────────────────────────────────────────────────────────
+    // Constructor: pre-allocates ALL memory at startup
+    //
+    // capacity: number of trade slots in the OrderPool (rounded up to
+    //           next power of 2 for bitwise AND indexing)
+    // ────────────────────────────────────────────────────────────────────
+    explicit ReconciliationEngine(size_t capacity = 1 << 20)
+        : pool_(next_power_of_2(capacity))
+        , timer_wheel_(next_power_of_2(capacity))
+        , watermark_ns_(0)
+        , obs_capacity_(4096)          // Initial observation buffer size
+    {
+        const size_t actual_cap = next_power_of_2(capacity);
+
+        // Pre-allocate the expired-indices buffer (used by tick())
+        expired_buffer_.resize(actual_cap);
+
+        // Pre-allocate the observation matrix with a reasonable initial size.
+        // It grows (at initialization-like cost) if active trades exceed this.
+        observation_matrix_.resize(obs_capacity_ * 4, 0.0f);
+
+        std::cout << "[C++] ReconciliationEngine initialized.\n"
+                  << "      Pool capacity:    " << actual_cap << " slots ("
+                  << (actual_cap * sizeof(TradeSlot)) / (1024 * 1024) << " MB)\n"
+                  << "      Ring buffer:      " << RING_BUFFER_CAPACITY
+                  << " slots (" << (RING_BUFFER_CAPACITY * sizeof(RingEntry)) / (1024 * 1024)
+                  << " MB)\n"
+                  << "      Timer wheel:      3-level, 256 slots/level\n"
+                  << "      Delta_max:        5.0 seconds\n"
+                  << "      Risk score:       (counterparty_id % 100) / 100.0\n";
+    }
+
+    // ================================================================
+    //  PRODUCER THREAD API — Lock-free, called from ingestion thread
+    // ================================================================
+
+    // ────────────────────────────────────────────────────────────────────
+    // submit_trade() — Enqueue a trade into the SPSC ring buffer
+    //
+    // This is the ONLY function safe to call from the producer thread.
+    // All other methods must be called from the engine thread.
+    //
+    // Returns false if the ring buffer is full (back-pressure signal).
+    // ────────────────────────────────────────────────────────────────────
+    bool submit_trade(uint64_t trade_id, int64_t price, int32_t quantity,
+                      uint32_t counterparty_id, uint64_t timestamp_ns)
+    {
+        return ring_buffer_.try_push(trade_id, price, quantity,
+                                     counterparty_id, timestamp_ns);
+    }
+
+    // ================================================================
+    //  ENGINE THREAD API — Single-threaded, called from Python/RL loop
+    // ================================================================
+
+    // ────────────────────────────────────────────────────────────────────
+    // tick() — Main processing loop
+    //
+    // Called once per RL step. Performs three operations:
+    //   1. Drains the SPSC ring buffer into the OrderPool
+    //   2. Schedules new timers in the TimerWheel
+    //   3. Advances the watermark and collects expired trades
+    //
+    // new_watermark_ns: the event-time to advance to. Must be
+    //                   monotonically non-decreasing.
+    //
+    // Returns: number of trades ingested from the ring buffer
+    // ────────────────────────────────────────────────────────────────────
+    size_t tick(uint64_t new_watermark_ns) {
+        // ── Step 1: Drain ring buffer into OrderPool ──────────────────
+        //
+        // Each entry from the ring buffer is:
+        //   a) Inserted into the OrderPool at O(1) via flat-array index
+        //   b) Scheduled in the TimerWheel for future expiration
+        //
+        const size_t pool_mask = pool_.capacity() - 1;
+
+        size_t ingested = ring_buffer_.drain([&](const RingEntry& entry) {
+            // Compute the pool index (same as OrderPool's internal index)
+            const uint32_t idx = static_cast<uint32_t>(entry.trade_id & pool_mask);
+
+            // Insert into the flat-array pool — O(1)
+            pool_.insert(entry.trade_id, entry.price, entry.quantity,
+                        entry.counterparty_id, entry.timestamp_ns);
+
+            // Schedule expiration timer — O(1)
+            timer_wheel_.schedule(idx, entry.timestamp_ns);
+        });
+
+        // ── Step 2: Advance the timer wheel watermark ─────────────────
+        //
+        // This sweeps L0 slots, cascades from L1/L2 as needed, and
+        // collects indices of trades that have exceeded Δ_max.
+        //
+        if (new_watermark_ns > watermark_ns_) {
+            const size_t expired_count = timer_wheel_.advance(
+                new_watermark_ns,
+                expired_buffer_.data(),
+                expired_buffer_.size()
+            );
+
+            // ── Step 3: Mark expired trades in the OrderPool ──────────
+            for (size_t i = 0; i < expired_count; ++i) {
+                const uint32_t idx = expired_buffer_[i];
+                if (pool_.get_state(idx) == SlotState::ACTIVE) {
+                    pool_.set_state(idx, SlotState::EXPIRED);
+                    ++total_expired_;
+                }
+            }
+        }
+
+        watermark_ns_ = new_watermark_ns;
+        total_ingested_ += ingested;
+        return ingested;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // reconcile() — Match an internal trade against an external receipt
+    //
+    // Called when a bank receipt arrives. Looks up the trade by ID and
+    // compares price and quantity.
+    //
+    // Returns a uint8_t code (castable to ReconcileResult):
+    //   0 = MATCH           — perfect match, trade marked RECONCILED
+    //   1 = PRICE_MISMATCH  — price differs (anomaly for RL agent)
+    //   2 = QTY_MISMATCH    — quantity differs (anomaly for RL agent)
+    //   3 = NOT_FOUND       — trade_id not in pool
+    //   4 = ALREADY_DONE    — trade was already reconciled or expired
+    // ────────────────────────────────────────────────────────────────────
+    uint8_t reconcile(uint64_t trade_id, int64_t expected_price,
+                      int32_t expected_qty)
+    {
+        // Compute the slot index directly — O(1)
+        const size_t idx = trade_id & (pool_.capacity() - 1);
+        const SlotState state = pool_.get_state(idx);
+
+        // Check if the slot is empty (never written or fully evicted)
+        if (state == SlotState::EMPTY) {
+            return static_cast<uint8_t>(ReconcileResult::NOT_FOUND);
+        }
+
+        // Check if the slot holds a different trade_id (hash collision
+        // from a later trade that overwrote this slot)
+        if (pool_.slot_at(idx).trade_id != trade_id) {
+            return static_cast<uint8_t>(ReconcileResult::NOT_FOUND);
+        }
+
+        // The slot holds our trade — check if it's still ACTIVE
+        if (state != SlotState::ACTIVE) {
+            // Trade exists but was already reconciled or expired
+            return static_cast<uint8_t>(ReconcileResult::ALREADY_DONE);
+        }
+
+        // ── Field-by-field comparison against bank receipt ──
+        const auto& slot = pool_.slot_at(idx);
+
+        if (slot.price != expected_price) {
+            return static_cast<uint8_t>(ReconcileResult::PRICE_MISMATCH);
+        }
+        if (slot.quantity != expected_qty) {
+            return static_cast<uint8_t>(ReconcileResult::QTY_MISMATCH);
+        }
+
+        // ── Perfect match -> mark RECONCILED, cancel the timer ──
+        pool_.set_state(idx, SlotState::RECONCILED);
+        timer_wheel_.cancel(static_cast<uint32_t>(idx));
+        ++total_reconciled_;
+
+        return static_cast<uint8_t>(ReconcileResult::MATCH);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // get_observation_matrix() — Zero-copy (N, 4) observation for RL
+    //
+    // Scans the OrderPool for all ACTIVE (unreconciled) trades and
+    // builds a contiguous float matrix. The pointer is returned to
+    // Python via nb::ndarray with reference_internal policy — Python
+    // gets a direct view into C++ memory, no serialization.
+    //
+    // Column layout:
+    //   [0] time_elapsed      — Normalized by Δ_max. Values > 1.0 mean
+    //                           the trade is overdue (should be expiring).
+    //   [1] price_delta       — Placeholder (0.0). Will be populated when
+    //                           reconcile() detects a PRICE_MISMATCH.
+    //   [2] missing_frequency — Global ratio: total_expired / total_ingested.
+    //                           Higher = more anomalies = riskier market.
+    //   [3] risk_score        — Per-counterparty static hash:
+    //                           (counterparty_id % 100) / 100.0
+    //                           Gives the RL agent a consistent 0.0–1.0
+    //                           risk float. The neural net will learn
+    //                           which counterparties correlate with anomalies.
+    // ────────────────────────────────────────────────────────────────────
+    nb::ndarray<nb::numpy, float> get_observation_matrix() {
+        // ── Count active trades to determine matrix rows ──
+        const size_t active = pool_.active_count();
+
+        // ── Grow observation buffer if needed ──
+        // This is an infrequent resize, not a hot-path allocation.
+        if (active > obs_capacity_) {
+            obs_capacity_ = active * 2;  // 2x to amortize future growth
+            observation_matrix_.resize(obs_capacity_ * 4);
+        }
+
+        // Handle empty case: return a (0, 4) matrix
+        if (active == 0) {
+            obs_rows_ = 0;
+            size_t shape[2] = { 0, 4 };
+            return nb::ndarray<nb::numpy, float>(
+                observation_matrix_.data(),
+                2,       // ndim
+                shape,   // shape array
+                nb::handle()
+            );
+        }
+
+        // ── Compute global missing_frequency (same for all rows) ──
+        const float missing_freq = (total_ingested_ > 0)
+            ? static_cast<float>(total_expired_) / static_cast<float>(total_ingested_)
+            : 0.0f;
+
+        // ── Scan the pool and fill the observation matrix ──
+        // TODO(performance): Maintain an active-trade index to avoid
+        // the O(capacity) scan. For 1M slots this takes ~1ms, acceptable
+        // for the RL step loop but improvable with an intrusive list.
+        const double delta_max_d = static_cast<double>(TimerWheel::DELTA_MAX_NS);
+        size_t row = 0;
+
+        for (size_t i = 0; i < pool_.capacity() && row < active; ++i) {
+            if (pool_.get_state(i) != SlotState::ACTIVE) continue;
+
+            const auto& slot = pool_.slot_at(i);
+            float* out = &observation_matrix_[row * 4];
+
+            // Col 0: time_elapsed — normalized seconds since trade ingestion
+            const double elapsed_ns = static_cast<double>(
+                watermark_ns_ - slot.timestamp_ns
+            );
+            out[0] = static_cast<float>(elapsed_ns / delta_max_d);
+
+            // Col 1: price_delta — placeholder for reconciliation mismatches
+            out[1] = 0.0f;
+
+            // Col 2: missing_frequency — global anomaly rate
+            out[2] = missing_freq;
+
+            // Col 3: risk_score — per-counterparty static hash
+            // (counterparty_id % 100) / 100.0 → consistent 0.0–0.99
+            out[3] = static_cast<float>(slot.counterparty_id % 100) / 100.0f;
+
+            ++row;
+        }
+
+        obs_rows_ = row;
+
+        // ── Return zero-copy ndarray ──
+        // nb::handle() means C++ owns the memory.
+        // The rv_policy::reference_internal on the binding ensures Python
+        // keeps the engine alive while the ndarray exists.
+        size_t shape[2] = { obs_rows_, 4 };
+        return nb::ndarray<nb::numpy, float>(
+            observation_matrix_.data(),
+            2,       // ndim = 2
+            shape,   // shape = (N, 4)
+            nb::handle()
+        );
+    }
+
+    // ================================================================
+    //  DIRECT INGESTION — For single-threaded mode (bypasses ring buffer)
+    // ================================================================
+
+    // ────────────────────────────────────────────────────────────────────
+    // ingest_trade() — Direct insertion into the pool (no ring buffer)
+    //
+    // Use this when running single-threaded (e.g., from Python without
+    // a separate ingestion thread). This is simpler but doesn't support
+    // concurrent ingestion.
+    // ────────────────────────────────────────────────────────────────────
+    bool ingest_trade(uint64_t trade_id, int64_t price, int32_t quantity,
+                      uint32_t counterparty_id, uint64_t timestamp_ns)
+    {
+        const uint32_t idx = static_cast<uint32_t>(
+            trade_id & (pool_.capacity() - 1)
+        );
+
+        pool_.insert(trade_id, price, quantity,
+                    counterparty_id, timestamp_ns);
+        timer_wheel_.schedule(idx, timestamp_ns);
+        ++total_ingested_;
+        return true;
+    }
+
+    // ================================================================
+    //  STATISTICS — Exposed as read-only properties to Python
+    // ================================================================
+
+    size_t   total_ingested()  const { return total_ingested_; }
+    size_t   total_reconciled() const { return total_reconciled_; }
+    size_t   total_expired()   const { return total_expired_; }
+    size_t   active_count()    const { return pool_.active_count(); }
+    size_t   ring_buffer_size() const { return ring_buffer_.size(); }
+    uint64_t watermark()       const { return watermark_ns_; }
+    size_t   pool_capacity()   const { return pool_.capacity(); }
+
+private:
+    // ────────────────────────────────────────────────────────────────────
+    // next_power_of_2() — Round up to nearest power of 2
+    //
+    // Uses the bit-smearing technique: O(1), no loops.
+    //   63 → 64, 100 → 128, 1000000 → 1048576
+    // ────────────────────────────────────────────────────────────────────
+    static size_t next_power_of_2(size_t n) {
+        if (n == 0) return 1;
+        --n;
+        n |= n >> 1;
+        n |= n >> 2;
+        n |= n >> 4;
+        n |= n >> 8;
+        n |= n >> 16;
+        n |= n >> 32;
+        return n + 1;
+    }
+
+    // ── Subsystems ──────────────────────────────────────────────────────
+    OrderPool                              pool_;           // Trade storage
+    TimerWheel                             timer_wheel_;    // Expiration mgmt
+    SPSCRingBuffer<RING_BUFFER_CAPACITY>   ring_buffer_;    // Lock-free ingestion
+
+    // ── Event-time watermark ────────────────────────────────────────────
+    uint64_t watermark_ns_;
+
+    // ── Pre-allocated buffers ───────────────────────────────────────────
+    std::vector<uint32_t> expired_buffer_;          // Indices from timer wheel
+    std::vector<float>    observation_matrix_;       // (N, 4) float matrix
+    size_t                obs_capacity_;             // Current obs buffer capacity
+    size_t                obs_rows_ = 0;             // Rows in current obs matrix
+
+    // ── Counters ────────────────────────────────────────────────────────
+    size_t total_ingested_   = 0;
+    size_t total_reconciled_ = 0;
+    size_t total_expired_    = 0;
+};
