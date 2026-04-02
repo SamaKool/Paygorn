@@ -1,8 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"D:/Paygorn/Paygorn/hf auditor/build/cmake_install.cmake",
-		"D:/Paygorn/Paygorn/hf auditor/build/_deps/nanobind-build/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

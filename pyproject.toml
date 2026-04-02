@@ -32,6 +32,7 @@ dependencies = [
     # "uvicorn",
     # "nanobind",
     # "numpy",
+    "pandas>=2.3.3",
 ]
 
 [project.optional-dependencies]

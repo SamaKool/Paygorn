@@ -28,6 +28,16 @@ Usage:
     python -m server.app
 """
 
+import sys
+from pathlib import Path
+
+# Ensure the project root (parent of this `server/` package) is on sys.path
+# so the compiled `hft_auditor` C++ extension and `models` module are
+# importable regardless of the working directory.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 try:
     from openenv.core.env_server.http_server import create_app
 except Exception as e:  # pragma: no cover
@@ -35,19 +45,15 @@ except Exception as e:  # pragma: no cover
         "openenv is required for the web interface. Install dependencies with '\n    uv sync\n'"
     ) from e
 
-try:
-    from ..models import FinAuditorAction, FinAuditorObservation
-    from .fin_auditor_environment import FinAuditorEnvironment
-except ModuleNotFoundError:
-    from models import FinAuditorAction, FinAuditorObservation
-    from server.fin_auditor_environment import FinAuditorEnvironment
+from models import AuditorAction, AuditorObservation
+from server.fin_auditor_environment import FinAuditorEnvironment
 
 
 # Create the app with web interface and README integration
 app = create_app(
     FinAuditorEnvironment,
-    FinAuditorAction,
-    FinAuditorObservation,
+    AuditorAction,
+    AuditorObservation,
     env_name="fin_auditor",
     max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
 )
