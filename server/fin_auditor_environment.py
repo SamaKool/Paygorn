@@ -102,7 +102,7 @@ class FinAuditorEnvironment(Environment):
 
         for _, row in df.iterrows():
             trade_id: int = int(str(row["trade_id"]), 16)          # hex string → uint64
-            price: float = float(row["amount"])                     # amount to float
+            price: int = int(float(row["amount"]))                  # amount to int
             quantity: int = 1                                       # default lot size
             counterparty_id: int = int(row["counterparty_id"])
             timestamp_ns: int = int(row["timestamp"]) * 1_000_000_000  # s → ns
@@ -117,13 +117,6 @@ class FinAuditorEnvironment(Environment):
     def reset(self) -> AuditorObservation:
         """
         Reset episode state and return the initial observation.
-
-        The C++ engine is *not* re-constructed here — re-construction is
-        expensive (ring-buffer allocation) and unnecessary between episodes.
-        The engine state naturally resets once the buffer wraps around.
-
-        Returns:
-            AuditorObservation with an empty feature matrix and a ready message.
         """
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._reset_count += 1
@@ -131,45 +124,50 @@ class FinAuditorEnvironment(Environment):
         # Tick once so the engine has a valid initial timestamp.
         self.engine.tick(time.time_ns())
 
-        # Populate the ring-buffer with real trade data before returning
-        # the first observation so the agent has meaningful features from
-        # the very first step.
+        # Populate the ring-buffer with real trade data
         self._ingest_data_chunk()
 
+        # Use the new anomaly matrix (likely empty on reset)
+        initial_features = self.engine.get_anomaly_matrix().tolist()
+
         return FinAuditorObservation(
-            features=self.engine.get_observation_matrix().tolist(),
+            features=initial_features,
             message="Fin Auditor engine ready.",
+            reward=0.0,  # No reward on reset
+            done=False
         )
 
     def step(self, action: AuditorAction) -> AuditorObservation:  # type: ignore[override]
         """
-        Advance the engine by one timestep.
-
-        The C++ engine ingests the current wall-clock time (nanoseconds),
-        updates its internal SPSC ring-buffer and timer-wheel, then exposes
-        the latest reconciled feature matrix for the RL agent to observe.
-
-        Args:
-            action: ``AuditorAction`` containing per-anomaly decisions
-                    (0 = Pass, 1 = Investigate, 2 = Flag).
-
-        Returns:
-            ``AuditorObservation`` whose ``features`` field is the
-            ``(batch_size, 4)`` matrix produced by ``get_observation_matrix()``.
+        Advance the engine by one timestep and calculate rewards.
         """
         self._state.step_count += 1
 
         # 1. Drive the C++ engine with the current wall-clock timestamp.
         self.engine.tick(time.time_ns())
 
-        # 2. Pull the latest feature matrix out of the engine.
-        #    get_observation_matrix() returns a nanobind ndarray; .tolist()
-        #    converts it to the nested list expected by AuditorObservation.
-        features: list[list[float]] = self.engine.get_observation_matrix().tolist()
+        # 2. Pull the latest ANOMALY matrix out of the engine.
+        anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
+        
+        # 3. Calculate Asymmetric Cost-Sensitive Reward
+        step_reward = 0.0
+        
+        # We only calculate rewards if there are anomalies and the agent took action
+        if anomalies and action and action.decisions:
+            # Map decisions to the anomalies
+            for i in range(min(len(anomalies), len(action.decisions))):
+                decision = action.decisions[i]
+                if decision == 2:    # Agent correctly flagged the anomaly
+                    step_reward += 1.0
+                elif decision == 0:  # Agent passed/ignored a real anomaly!
+                    step_reward -= 5.0
+                # Action 1 (Investigate) is neutral, 0.0 reward
 
         return FinAuditorObservation(
-            features=features,
-            message="Batch processed",
+            features=anomalies,
+            message=f"Processed batch. Found {len(anomalies)} anomalies.",
+            reward=step_reward,
+            done=False
         )
 
     # ------------------------------------------------------------------

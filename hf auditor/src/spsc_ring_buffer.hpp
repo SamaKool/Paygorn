@@ -117,113 +117,106 @@ public:
     bool try_push(uint64_t trade_id, int64_t price, int32_t quantity,
                   uint32_t counterparty_id, uint64_t timestamp_ns)
     {
-        // Read our own head (relaxed — we're the only writer)
-        const uint64_t head = head_.load(std::memory_order_relaxed);
+        // 1. Load the current head_ with memory_order_relaxed (we are the only writer)
+        const size_t head = head_.load(std::memory_order_relaxed);
 
-        // Read the consumer's tail (acquire — synchronize with consumer's
-        // release store to see freed slots)
-        const uint64_t tail = tail_.load(std::memory_order_acquire);
+        // 2. Calculate next_head = (head + 1) & (Capacity - 1)
+        const size_t next_head = (head + 1) & MASK;
 
-        // Check if buffer is full
-        if (head - tail >= Capacity) {
-            return false;  // Back-pressure: consumer must drain
+        // 3. Load the tail_ using memory_order_acquire (synchronize with consumer)
+        const size_t tail = tail_.load(std::memory_order_acquire);
+
+        // Check if buffer is full (if next_head catches up to tail, one slot empty)
+        if (next_head == tail) {
+            return false;
         }
 
-        // Write the entry — this is safe because no other thread writes
-        // to this slot (the consumer has already consumed past it)
-        auto& entry         = buffer_[head & MASK];
-        entry.trade_id      = trade_id;
-        entry.price         = price;
-        entry.quantity       = quantity;
+        // 4. Write trade fields directly into buffer_[head]
+        // This is safe because the consumer has not reached head yet.
+        auto& entry           = buffer_[head];
+        entry.trade_id        = trade_id;
+        entry.price           = price;
+        entry.quantity        = quantity;
         entry.counterparty_id = counterparty_id;
-        entry.timestamp_ns  = timestamp_ns;
+        entry.timestamp_ns    = timestamp_ns;
 
-        // Publish: make the entry visible to the consumer.
-        // The RELEASE fence ensures all writes above are committed
-        // before the consumer sees the incremented head.
-        head_.store(head + 1, std::memory_order_release);
+        // 5. Store the new next_head into head_ using memory_order_release
+        // This publishes the write to the consumer thread.
+        head_.store(next_head, std::memory_order_release);
 
         return true;
     }
 
     // ────────────────────────────────────────────────────────────────────
-    // drain() — Consumer API (batch)
-    //
-    // Called from the engine thread. Drains ALL available entries in a
-    // tight loop, invoking the callback for each entry. This amortizes
-    // the atomic load of head_ across the entire batch.
-    //
-    // The callback signature must be: void(const RingEntry&)
-    //
-    // Memory ordering:
-    //   1. Load head_ with ACQUIRE to see the producer's latest progress
-    //   2. Read entries from buffer_[tail..head)
-    //   3. Store new tail with RELEASE to free slots for the producer
-    //
-    // Returns: number of entries drained
-    // ────────────────────────────────────────────────────────────────────
     template <typename Callback>
     size_t drain(Callback&& cb) {
-        // Read our own tail (relaxed — we're the only writer of tail_)
-        const uint64_t tail = tail_.load(std::memory_order_relaxed);
+        // 1. Load our own tail_ with memory_order_relaxed (we are the only writer)
+        size_t tail = tail_.load(std::memory_order_relaxed);
 
-        // Read the producer's head (acquire — synchronize with producer's
-        // release store to see published entries)
-        const uint64_t head = head_.load(std::memory_order_acquire);
+        // 2. Load the producer's head_ using memory_order_acquire 
+        // to synchronize with published entries.
+        const size_t head = head_.load(std::memory_order_acquire);
 
         // Nothing to drain?
         if (tail == head) {
             return 0;
         }
 
-        // Drain all available entries in a tight loop
+        // 3. Drain all available entries in a tight loop
         size_t count = 0;
-        for (uint64_t i = tail; i < head; ++i) {
-            const auto& entry = buffer_[i & MASK];
-            cb(entry);
+        while (tail != head) {
+            // 4. Invoke process_func directly (zero-copy)
+            cb(buffer_[tail]);
+            
+            // 5. Increment tail (tail = (tail + 1) & (Capacity - 1))
+            tail = (tail + 1) & MASK;
             ++count;
         }
 
-        // Publish: free all drained slots for the producer.
-        // The RELEASE fence ensures the callback has fully processed
-        // each entry before the producer can overwrite the slot.
-        tail_.store(head, std::memory_order_release);
+        // 6. After the loop, atomic store the final tail with memory_order_release
+        // This notifies the producer that slots are now free.
+        tail_.store(tail, std::memory_order_release);
 
         return count;
     }
 
     // ────────────────────────────────────────────────────────────────────
     // try_pop() — Consumer API (single)
-    //
-    // Pops a single entry. Useful for low-latency processing where
-    // batch drain adds too much latency to the first entry.
     // ────────────────────────────────────────────────────────────────────
     bool try_pop(RingEntry& out) {
-        const uint64_t tail = tail_.load(std::memory_order_relaxed);
-        const uint64_t head = head_.load(std::memory_order_acquire);
+        const size_t tail = tail_.load(std::memory_order_relaxed);
+        const size_t head = head_.load(std::memory_order_acquire);
 
         if (tail == head) {
-            return false;  // Empty
+            return false;
         }
 
-        out = buffer_[tail & MASK];
-        tail_.store(tail + 1, std::memory_order_release);
+        out = buffer_[tail];
+        tail_.store((tail + 1) & MASK, std::memory_order_release);
         return true;
     }
 
     // ────────────────────────────────────────────────────────────────────
-    // Status queries (approximate — inherently racy across threads,
-    // but useful for monitoring and back-pressure decisions)
+    // Status queries (Modulo arithmetic for wrapped pointers)
     // ────────────────────────────────────────────────────────────────────
     size_t size() const {
-        const uint64_t head = head_.load(std::memory_order_acquire);
-        const uint64_t tail = tail_.load(std::memory_order_acquire);
-        return static_cast<size_t>(head - tail);
+        const size_t head = head_.load(std::memory_order_acquire);
+        const size_t tail = tail_.load(std::memory_order_acquire);
+        
+        if (head >= tail) {
+            return head - tail;
+        } else {
+            return (Capacity - tail) + head;
+        }
     }
 
-    bool empty() const { return size() == 0; }
+    bool empty() const { 
+        return head_.load(std::memory_order_relaxed) == tail_.load(std::memory_order_relaxed); 
+    }
 
-    bool full() const { return size() >= Capacity; }
+    bool full() const { 
+        return ((head_.load(std::memory_order_relaxed) + 1) & MASK) == tail_.load(std::memory_order_relaxed); 
+    }
 
     static constexpr size_t capacity() { return Capacity; }
 
