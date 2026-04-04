@@ -31,6 +31,7 @@ class FinAuditorEnvironment(Environment):
     _RING_BUFFER_CAPACITY: int = 1_048_576
     _INGEST_CHUNK_SIZE: int = 100
     _DELTA_MAX_NS: int = 5_000_000_000
+    _MAX_EPISODE_STEPS: int = 50   # hard episode boundary — prevents infinite advantage windows
 
     _CSV_TOTAL_ROWS: int = 10000  # internal_trades.csv has ~10k data rows
 
@@ -85,48 +86,41 @@ class FinAuditorEnvironment(Environment):
         self.engine.tick(self.sim_time_ns)
 
         # Ingest the next window of trades — keeps the anomaly matrix non-empty
-        # across all MAX_STEPS iterations (self, not self.auditor — fixed bug)
+        # across all MAX_STEPS iterations
         self._ingest_data_chunk()
 
         anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
-        step_reward = 0.0
-        max_reward = 0.001 # Prevent division by zero
-        
-        if anomalies and action and action.decisions:
-            n = min(len(anomalies), len(action.decisions))
-            missing_freq = anomalies[0][2] if anomalies else 0.0
-            
-            for i in range(n):
-                decision = action.decisions[i]
-                risk_score = anomalies[i][3]
-                
-                # Base reward: correctly flagging any anomaly
-                if decision == 2:
-                    step_reward += 1.0
-                elif decision == 0:
-                    step_reward -= 5.0  # harsh penalty for passing anomalies
-                
-                # Medium task bonus: reward precision on high-risk counterparties
-                if decision == 2 and risk_score > 0.5:
-                    step_reward += 0.5   
-                
-                # Hard task: systemic anomaly wave bonus
-                if missing_freq > 0.3 and decision == 2:
-                    step_reward += 1.0   
-                elif missing_freq <= 0.1 and decision == 2:
-                    step_reward -= 0.1   
+        total_anomalies = len(anomalies)
+        correct_audits = 0
 
-            # Max possible per step = n * 2.5 (flag + risk bonus + systemic bonus)
-            max_reward = n * 2.5
-            
-        # Normalize strictly to 0.0–1.0 range for the hackathon task grader
-        normalized_reward = max(0.0, min(1.0, step_reward / max_reward)) if max_reward > 0 else 0.0
+        if total_anomalies > 0 and action and action.decisions:
+            n = min(total_anomalies, len(action.decisions))
+            for i in range(n):
+                # Any FLAG (2) decision on a confirmed anomaly is a correct audit.
+                # The C++ engine only surfaces expired/unreconciled trades, so
+                # every entry in the matrix is a true positive candidate.
+                if action.decisions[i] == 2:
+                    correct_audits += 1
+
+        # Density-based reward: fraction of anomalies correctly flagged.
+        # This provides a dense, continuous signal in [0.0, 1.0] that PPO can
+        # differentiate — replacing the sparse penalty logic that caused NaN collapse.
+        if total_anomalies > 0:
+            normalized_reward = float(correct_audits) / float(total_anomalies)
+        else:
+            normalized_reward = 0.0
+
+        # Hard clamp: guarantee the grader boundary is never violated
+        normalized_reward = max(0.0, min(1.0, normalized_reward))
+
+        # Episode terminates at the step limit so PPO can compute advantages
+        done = self._state.step_count >= self._MAX_EPISODE_STEPS
 
         return FinAuditorObservation(
             features=anomalies,
-            message=f"Processed batch. Found {len(anomalies)} anomalies.",
-            reward=normalized_reward,  # use the 0.0–1.0 clamped value
-            done=False
+            message=f"Processed batch. Found {total_anomalies} anomalies. correct={correct_audits}",
+            reward=normalized_reward,
+            done=done
         )
 
     @property

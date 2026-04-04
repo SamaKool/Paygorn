@@ -27,6 +27,7 @@ import json
 import re
 import datetime
 import traceback
+import time
 
 # ── Project root on sys.path so `hft_auditor` .so and `models` are importable ──
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -157,28 +158,41 @@ def _normalize_decisions(decisions: list[int], expected: int) -> list[int]:
 
 
 def _call_llm(step: int, features: list[list[float]]) -> list[int]:
-    """Call the LLM and return parsed decisions for the given feature matrix."""
+    """
+    Call the LLM with exponential backoff retries.
+    Returns parsed decisions for the given feature matrix.
+    """
     user_prompt = _build_user_prompt(step, features)
+    max_retries = 5
 
-    try:
-        response = _client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_prompt},
-            ],
-            max_tokens=512,
-            temperature=0.0,        # deterministic for reproducible scoring
-            # Note: response_format={"type": "json_object"} is NOT used here because
-            # many HF-hosted endpoints do not support it. We rely on the prompt
-            # instead and fall back gracefully via _parse_llm_decisions().
-        )
-        content = response.choices[0].message.content or ""
-    except Exception as e:
-        print(f"[WARN]  LLM call failed at step {step}: {e}. Defaulting to FLAG all.", file=sys.stderr)
-        return [2] * len(features)
+    for attempt in range(max_retries):
+        try:
+            response = _client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                max_tokens=512,
+                temperature=0.0,
+            )
+            content = response.choices[0].message.content or ""
+            return _parse_llm_decisions(content, len(features))
+        except Exception as e:
+            wait_time = 2 * (2**attempt)
+            print(
+                f"[WARN]  LLM call failed at step {step} (attempt {attempt+1}/{max_retries}): {e}. "
+                f"Retrying in {wait_time}s...",
+                file=sys.stderr
+            )
+            time.sleep(wait_time)
 
-    return _parse_llm_decisions(content, len(features))
+    print(
+        f"[ERROR] LLM call failed after {max_retries} attempts at step {step}. "
+        f"Falling back to FLAG all {len(features)} trades.",
+        file=sys.stderr
+    )
+    return [2] * len(features)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
