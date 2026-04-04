@@ -81,15 +81,16 @@ public:
         , timer_wheel_(next_power_of_2(capacity))
         , watermark_ns_(0)
         , obs_capacity_(4096)          // Initial observation buffer size
+        , anomaly_capacity_(1024)      // Initial anomaly buffer size
     {
         const size_t actual_cap = next_power_of_2(capacity);
 
         // Pre-allocate the expired-indices buffer (used by tick())
         expired_buffer_.resize(actual_cap);
 
-        // Pre-allocate the observation matrix with a reasonable initial size.
-        // It grows (at initialization-like cost) if active trades exceed this.
+        // Pre-allocate matrix buffers.
         observation_matrix_.resize(obs_capacity_ * 4, 0.0f);
+        anomaly_matrix_.resize(anomaly_capacity_ * 4, 0.0f);
 
         std::cout << "[C++] ReconciliationEngine initialized.\n"
                   << "      Pool capacity:    " << actual_cap << " slots ("
@@ -337,6 +338,65 @@ public:
         );
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // get_anomaly_matrix() — Zero-copy (N, 4) matrix of anomalies (EXPIRED)
+    //
+    // Scans the OrderPool for trades that were marked EXPIRED during tick().
+    // Collects their features and then marks them as EMPTY to clear them
+    // from the pool.
+    // ────────────────────────────────────────────────────────────────────
+    nb::ndarray<nb::numpy, float> get_anomaly_matrix() {
+        // 1. Count expired trades
+        size_t count = 0;
+        for (size_t i = 0; i < pool_.capacity(); ++i) {
+            if (pool_.get_state(i) == SlotState::EXPIRED) {
+                ++count;
+            }
+        }
+
+        // 2. Grow buffer if needed
+        if (count > anomaly_capacity_) {
+            anomaly_capacity_ = count * 2 + 1024;
+            anomaly_matrix_.resize(anomaly_capacity_ * 4);
+        }
+
+        // Handle empty case
+        if (count == 0) {
+            size_t shape[2] = { 0, 4 };
+            return nb::ndarray<nb::numpy, float>(
+                anomaly_matrix_.data(), 2, shape, nb::handle());
+        }
+
+        // 3. Populate matrix and CLEAR slots
+        const float missing_freq = (total_ingested_ > 0)
+            ? static_cast<float>(total_expired_) / static_cast<float>(total_ingested_)
+            : 0.0f;
+        const double delta_max_d = static_cast<double>(TimerWheel::DELTA_MAX_NS);
+        size_t row = 0;
+
+        for (size_t i = 0; i < pool_.capacity() && row < count; ++i) {
+            if (pool_.get_state(i) != SlotState::EXPIRED) continue;
+
+            const auto& slot = pool_.slot_at(i);
+            float* out = &anomaly_matrix_[row * 4];
+
+            const double elapsed_ns = static_cast<double>(watermark_ns_ - slot.timestamp_ns);
+            out[0] = static_cast<float>(elapsed_ns / delta_max_d);
+            out[1] = 0.0f;
+            out[2] = missing_freq;
+            out[3] = static_cast<float>(slot.counterparty_id % 100) / 100.0f;
+
+            // CRITICAL: Mark slot as EMPTY after reporting to Python so it
+            // doesn't reappear in the next processing step.
+            pool_.set_state(i, SlotState::EMPTY);
+            ++row;
+        }
+
+        size_t shape[2] = { row, 4 };
+        return nb::ndarray<nb::numpy, float>(
+            anomaly_matrix_.data(), 2, shape, nb::handle());
+    }
+
     // ================================================================
     //  DIRECT INGESTION — For single-threaded mode (bypasses ring buffer)
     // ================================================================
@@ -406,6 +466,9 @@ private:
     std::vector<float>    observation_matrix_;       // (N, 4) float matrix
     size_t                obs_capacity_;             // Current obs buffer capacity
     size_t                obs_rows_ = 0;             // Rows in current obs matrix
+
+    std::vector<float>    anomaly_matrix_;           // (N, 4) float matrix
+    size_t                anomaly_capacity_;         // Current anomaly buffer capacity
 
     // ── Counters ────────────────────────────────────────────────────────
     size_t total_ingested_   = 0;
