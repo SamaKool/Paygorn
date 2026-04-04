@@ -5,3 +5,31 @@ runtime: fastapi
 app: server.app:app
 port: 8000
 
+tasks:
+  - id: anomaly_detection_easy
+    description: >
+      EASY — Detect expired/unreconciled trades. After a reset, trades
+      are ingested and immediately aged past the 5-second max window.
+      The agent must call /step and receive the anomaly matrix. A valid
+      response requires at least one trade flagged (decision=2) in the
+      action sent to /step. 
+    max_steps: 5
+    reward_threshold: 0.5
+
+  - id: anomaly_detection_medium
+    description: >
+      MEDIUM — Identify high-risk counterparties. The agent must process
+      the anomaly matrix and flag all trades where risk_score > 0.5.
+      Reward is based on precision of high-risk flags. Requires the LLM to 
+      parse the feature array and make discriminating decisions.
+    max_steps: 10
+    reward_threshold: 0.6
+
+  - id: anomaly_detection_hard
+    description: >
+      HARD — Systemic anomaly triage. The agent must detect when
+      missing_frequency > 0.3, indicating a systemic anomaly wave, 
+      and correctly flag ALL trades in the batch. Deducts points for 
+      false-positive flags during safe periods.
+    max_steps: 20
+    reward_threshold: 0.7

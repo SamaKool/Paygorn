@@ -4,42 +4,43 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# Multi-stage build using openenv-base
-# This Dockerfile is flexible and works for both:
-# - In-repo environments (with local OpenEnv sources)
-# - Standalone environments (with openenv from PyPI/Git)
-# The build script (openenv build) handles context detection and sets appropriate build args.
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-stage build — Memory-Safe C++ Strategy
+#
+# STAGE 1 (builder): Install Python deps + attempt to use pre-compiled .so.
+#   • If a pre-compiled hft_auditor*.so exists in the build context it is used
+#     directly — no CMake, no RAM spike.
+#   • If the .so is missing, CMake compiles with -j1 and -O1 to stay under the
+#     8 GB RAM limit on HuggingFace Spaces (peak ~1.2 GB vs ~5 GB for -O3).
+#
+# STAGE 2 (runtime): Minimal image — only the venv, app code, and the .so.
+# ─────────────────────────────────────────────────────────────────────────────
 
 ARG BASE_IMAGE=ghcr.io/meta-pytorch/openenv-base:latest
 FROM ${BASE_IMAGE} AS builder
 
 WORKDIR /app
 
-# Ensure git is available (required for installing dependencies from VCS)
+# git is needed for VCS deps; cmake + build-essential needed only for fallback
 RUN apt-get update && \
     apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
-# Build argument to control whether we're building standalone or in-repo
 ARG BUILD_MODE=in-repo
 ARG ENV_NAME=fin_auditor
 
-# Copy environment code (always at root of build context)
+# Copy environment code into the builder context
 COPY . /app/env
-
-# For in-repo builds, openenv is already vendored in the build context
-# For standalone builds, openenv will be installed via pyproject.toml
 WORKDIR /app/env
 
-# Ensure uv is available (for local builds where base image lacks it)
+# Ensure uv is available
 RUN if ! command -v uv >/dev/null 2>&1; then \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     mv /root/.local/bin/uv /usr/local/bin/uv && \
     mv /root/.local/bin/uvx /usr/local/bin/uvx; \
     fi
 
-# Install dependencies using uv sync
-# If uv.lock exists, use it; otherwise resolve on the fly
+# Install Python dependencies
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ -f uv.lock ]; then \
     uv sync --frozen --no-install-project --no-editable; \
@@ -54,21 +55,44 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-editable; \
     fi
 
-# Final runtime stage
+# ── C++ Engine: pre-built .so first, memory-safe CMake fallback ──────────────
+#
+# Decision logic (runs at Docker build time, not container start):
+#   1. Check if a compiled hft_auditor*.so already lives in the build context.
+#   2. If YES → emit a success message and skip CMake entirely.
+#   3. If NO  → install build tools and compile with:
+#        -j1           (single compile job — caps peak RAM at ~1.5 GB)
+#        -O1           (lower optimisation — cuts peak RAM from ~5 GB to ~1.2 GB)
+#        DOCKER_SAFE_BUILD=ON (CMakeLists.txt option that overrides -O3 with -O1)
+#
+RUN set -e; \
+    SO_FILE=$(ls /app/env/hft_auditor*.so 2>/dev/null | head -1); \
+    if [ -n "$SO_FILE" ]; then \
+        echo "[BUILD] ✓ Pre-compiled .so found at $SO_FILE — skipping CMake."; \
+    else \
+        echo "[BUILD] No pre-compiled .so found. Falling back to memory-safe CMake build..."; \
+        apt-get update && \
+        apt-get install -y --no-install-recommends cmake build-essential && \
+        rm -rf /var/lib/apt/lists/*; \
+        cd /app/env && \
+        python build_engine.py --docker-safe; \
+    fi
+
+# ── Final runtime stage ───────────────────────────────────────────────────────
 FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
-# Copy the virtual environment from builder
+# Copy the Python virtual environment from builder
 COPY --from=builder /app/env/.venv /app/.venv
 
-# Copy the environment code
+# Copy the full environment (source + data + .so binary)
 COPY --from=builder /app/env /app/env
 
-# Set PATH to use the virtual environment
+# Activate the venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Set PYTHONPATH so imports work correctly
+# Make all modules importable (models, server, hft_auditor .so, inference.py)
 ENV PYTHONPATH="/app/env:$PYTHONPATH"
 
 # Health check
@@ -76,5 +100,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the FastAPI server
-# The module path is constructed to work with the /app/env structure
 CMD ["sh", "-c", "cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 8000"]

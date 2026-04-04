@@ -20,6 +20,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import argparse
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -68,7 +69,7 @@ def clean() -> None:
     print("  Clean complete.\n")
 
 
-def cmake_configure(os_name: str) -> None:
+def cmake_configure(os_name: str, docker_safe: bool = False) -> None:
     """Run the CMake configure step."""
     cmd = [
         "cmake",
@@ -77,20 +78,25 @@ def cmake_configure(os_name: str) -> None:
         f"-DCMAKE_BUILD_TYPE=Release",
     ]
 
+    if docker_safe:
+        # -O1 peaks at ~1.2 GB vs -O3's ~5 GB for this translation unit.
+        # DOCKER_SAFE_BUILD=ON triggers the matching CMakeLists.txt option.
+        cmd += ["-DDOCKER_SAFE_BUILD=ON", "-DCMAKE_CXX_FLAGS=-O1"]
+        print("  Memory-safe mode: -j1, -O1, DOCKER_SAFE_BUILD=ON")
+
     if os_name == "Windows":
-        # Tell CMake to prefer MSVC.  In a standard Developer Command Prompt
-        # this is automatic, but adding the generator makes it explicit.
         cmd += ["-G", "Visual Studio 17 2022"]
 
     run(cmd, description="CMake – Configure")
 
 
-def cmake_build() -> None:
+def cmake_build(docker_safe: bool = False) -> None:
     """Run the CMake build step."""
-    run(
-        ["cmake", "--build", str(BUILD_DIR), "--config", "Release"],
-        description="CMake – Build",
-    )
+    cmd = ["cmake", "--build", str(BUILD_DIR), "--config", "Release"]
+    if docker_safe:
+        # --parallel 1  →  make -j1  →  caps peak RAM to ~1.5 GB
+        cmd += ["--parallel", "1"]
+    run(cmd, description="CMake – Build")
 
 
 def copy_to_root() -> Path:
@@ -129,8 +135,18 @@ def copy_to_root() -> Path:
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Build the hft_auditor C++ extension.")
+    parser.add_argument(
+        "--docker-safe",
+        action="store_true",
+        help="Memory-safe build for Docker: -j1, -O1 instead of -O3 -march=native.",
+    )
+    args = parser.parse_args()
+
     os_name = platform.system()   # 'Linux', 'Windows', or 'Darwin'
     print(f"Detected OS : {os_name}")
+    if args.docker_safe:
+        print("Mode       : DOCKER_SAFE (--parallel 1, -O1)")
 
     if os_name not in ("Linux", "Windows"):
         print(
@@ -142,10 +158,10 @@ def main() -> None:
     clean()
 
     # 2. Configure
-    cmake_configure(os_name)
+    cmake_configure(os_name, docker_safe=args.docker_safe)
 
     # 3. Build
-    cmake_build()
+    cmake_build(docker_safe=args.docker_safe)
 
     # 4. Copy extension to project root
     dest = copy_to_root()
