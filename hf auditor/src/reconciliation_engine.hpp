@@ -469,7 +469,16 @@ public:
     }
 
     // ────────────────────────────────────────────────────────────────────
-    // generate_batch() — Difficulty-aware trade generation
+    // generate_batch() — Linear Signal Separation for LLM Inference
+    //
+    // Anomaly ratios:
+    //   EASY:   100% anomalies
+    //   MEDIUM: 50% anomalies / 50% safe
+    //   HARD:   20% anomalies / 80% safe
+    //
+    // Counterparty clustering (forces linearly separable risk_score):
+    //   Anomaly → counterparty_id ∈ [70, 99]  → risk_score ∈ [0.70, 0.99]
+    //   Safe    → counterparty_id ∈ [0,  19]  → risk_score ∈ [0.00, 0.19]
     // ────────────────────────────────────────────────────────────────────
     size_t generate_batch(Difficulty difficulty, size_t batch_size, uint64_t timestamp_ns) {
         size_t anomaly_count = 0;
@@ -477,27 +486,30 @@ public:
 
         for (size_t i = 0; i < batch_size; ++i) {
             const uint64_t trade_id = base_id + i;
-            const uint32_t counterparty_id = static_cast<uint32_t>(fast_rand() % 100);
             const int64_t price = 10000 + static_cast<int64_t>(fast_rand() % 1000);
             const int32_t quantity = 10 + static_cast<int32_t>(fast_rand() % 100);
 
+            // ── Step 1: Determine anomaly label based on difficulty ratio ──
             uint8_t is_anomaly = 0;
 
             if (difficulty == Difficulty::EASY) {
-                // EASY: risk_score >= 0.5 is ALWAYS an anomaly
-                is_anomaly = (counterparty_id >= 50) ? 1 : 0;
+                // EASY: 100% anomalies — every trade is anomalous
+                is_anomaly = 1;
             } else if (difficulty == Difficulty::MEDIUM) {
-                // MEDIUM: High-risk = 80% anomaly, Low-risk = 10% false alarm
-                if (counterparty_id >= 50) {
-                    is_anomaly = (rand_float() < 0.80f) ? 1 : 0;
-                } else {
-                    is_anomaly = (rand_float() < 0.10f) ? 1 : 0;
-                }
+                // MEDIUM: 50% anomalies / 50% safe
+                is_anomaly = (rand_float() < 0.50f) ? 1 : 0;
             } else {
-                // HARD: 40% base rate + 15% risk premium. High noise.
-                float anomaly_prob = 0.40f;
-                if (counterparty_id >= 50) anomaly_prob += 0.15f;
-                is_anomaly = (rand_float() < anomaly_prob) ? 1 : 0;
+                // HARD: 20% anomalies / 80% safe
+                is_anomaly = (rand_float() < 0.20f) ? 1 : 0;
+            }
+
+            // ── Step 2: Force counterparty into distinct clusters ──────────
+            // This creates a clear, linearly separable risk_score signal.
+            uint32_t counterparty_id;
+            if (is_anomaly == 1) {
+                counterparty_id = 70 + (fast_rand() % 30);  // High Risk Cluster [70-99]
+            } else {
+                counterparty_id = (fast_rand() % 20);        // Low Risk Cluster  [0-19]
             }
 
             anomaly_count += is_anomaly;
