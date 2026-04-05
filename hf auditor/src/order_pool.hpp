@@ -79,6 +79,7 @@ public:
         // resize() default-constructs all elements in-place.
         slots_.resize(capacity);
         states_.resize(capacity, SlotState::EMPTY);
+        ground_truth_.resize(capacity, 0);
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -165,6 +166,12 @@ public:
     TradeSlot&       slot_at(size_t idx)       { return slots_[idx]; }
 
     // ────────────────────────────────────────────────────────────────────────
+    // Ground Truth accessors (for reward computation)
+    // ────────────────────────────────────────────────────────────────────────
+    void set_ground_truth(size_t idx, uint8_t label) { ground_truth_[idx] = label; }
+    uint8_t get_ground_truth(size_t idx) const { return ground_truth_[idx]; }
+
+    // ────────────────────────────────────────────────────────────────────────
     // Capacity and statistics
     // ────────────────────────────────────────────────────────────────────────
     size_t capacity()     const { return capacity_; }
@@ -182,4 +189,5 @@ private:
 
     std::vector<TradeSlot> slots_;       // 32 bytes × capacity — trade data
     std::vector<SlotState> states_;      // 1 byte  × capacity — slot states
+    std::vector<uint8_t>   ground_truth_; // 1 byte  × capacity — 0=safe, 1=anomaly
 };

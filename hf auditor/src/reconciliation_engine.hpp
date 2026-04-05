@@ -66,6 +66,15 @@ enum class ReconcileResult : uint8_t {
 };
 
 // ────────────────────────────────────────────────────────────────────────────
+// Difficulty — Controls anomaly distribution and signal-to-noise ratio
+// ────────────────────────────────────────────────────────────────────────────
+enum class Difficulty : uint8_t {
+    EASY   = 0,   // Deterministic: risk_score > 0.5 is always an anomaly
+    MEDIUM = 1,   // Probabilistic: high-risk = 80% anomaly, low-risk = 10% false alarm
+    HARD   = 2    // Adversarial: weak correlations, high noise
+};
+
+// ────────────────────────────────────────────────────────────────────────────
 // ReconciliationEngine — The main orchestrator
 // ────────────────────────────────────────────────────────────────────────────
 class ReconciliationEngine {
@@ -82,6 +91,7 @@ public:
         , watermark_ns_(0)
         , obs_capacity_(4096)          // Initial observation buffer size
         , anomaly_capacity_(1024)      // Initial anomaly buffer size
+        , reward_details_capacity_(1024)
     {
         const size_t actual_cap = next_power_of_2(capacity);
 
@@ -91,6 +101,7 @@ public:
         // Pre-allocate matrix buffers.
         observation_matrix_.resize(obs_capacity_ * 4, 0.0f);
         anomaly_matrix_.resize(anomaly_capacity_ * 4, 0.0f);
+        reward_details_.resize(reward_details_capacity_, 0.0f);
 
         std::cout << "[C++] ReconciliationEngine initialized.\n"
                   << "      Pool capacity:    " << actual_cap << " slots ("
@@ -173,6 +184,7 @@ public:
             );
 
             // ── Step 3: Mark expired trades in the OrderPool ──────────
+            last_batch_expired_count_ = expired_count;
             for (size_t i = 0; i < expired_count; ++i) {
                 const uint32_t idx = expired_buffer_[i];
                 if (pool_.get_state(idx) == SlotState::ACTIVE) {
@@ -180,6 +192,8 @@ public:
                     ++total_expired_;
                 }
             }
+        } else {
+            last_batch_expired_count_ = 0;
         }
 
         watermark_ns_ = new_watermark_ns;
@@ -398,6 +412,129 @@ public:
     }
 
     // ================================================================
+    //  REWARD & DIFFICULTY — Phase 5
+    // ================================================================
+
+    // Asymmetric Cost Matrix (Normalized to 0.0 - 1.0)
+    static constexpr float REWARD_TRUE_POSITIVE  = 1.0f;  // Correctly flagged anomaly
+    static constexpr float REWARD_TRUE_NEGATIVE  = 0.5f;  // Correctly ignored safe trade
+    static constexpr float REWARD_FALSE_POSITIVE = 0.1f;  // Flagged a safe trade (waste)
+    static constexpr float REWARD_FALSE_NEGATIVE = 0.0f;  // Missed a real anomaly (danger)
+
+    // ────────────────────────────────────────────────────────────────────
+    // compute_reward() — Compute asymmetric reward for agent actions
+    // ────────────────────────────────────────────────────────────────────
+    float compute_reward(const uint8_t* agent_actions, size_t num_actions) {
+        float total_reward = 0.0f;
+
+        // Verify num_actions matches exactly what we expired in tick()
+        if (num_actions != last_batch_expired_count_) {
+             // In a real RL loop this shouldn't happen, but we'll be safe
+             if (num_actions > last_batch_expired_count_) num_actions = last_batch_expired_count_;
+        }
+
+        // Grow details buffer if needed
+        if (num_actions > reward_details_capacity_) {
+            reward_details_capacity_ = num_actions * 2;
+            reward_details_.resize(reward_details_capacity_);
+        }
+
+        last_tp_ = last_tn_ = last_fp_ = last_fn_ = 0;
+
+        for (size_t i = 0; i < num_actions; ++i) {
+            const uint32_t idx = expired_buffer_[i];
+            const uint8_t truth = pool_.get_ground_truth(idx);
+            const uint8_t action = agent_actions[i];
+
+            float r;
+            if (action == 1 && truth == 1) {
+                r = REWARD_TRUE_POSITIVE;
+                ++last_tp_;
+            } else if (action == 0 && truth == 0) {
+                r = REWARD_TRUE_NEGATIVE;
+                ++last_tn_;
+            } else if (action == 1 && truth == 0) {
+                r = REWARD_FALSE_POSITIVE;
+                ++last_fp_;
+            } else { // action == 0 && truth == 1
+                r = REWARD_FALSE_NEGATIVE;
+                ++last_fn_;
+            }
+
+            reward_details_[i] = r;
+            total_reward += r;
+        }
+
+        return total_reward;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // generate_batch() — Difficulty-aware trade generation
+    // ────────────────────────────────────────────────────────────────────
+    size_t generate_batch(Difficulty difficulty, size_t batch_size, uint64_t timestamp_ns) {
+        size_t anomaly_count = 0;
+        const uint64_t base_id = total_ingested_;
+
+        for (size_t i = 0; i < batch_size; ++i) {
+            const uint64_t trade_id = base_id + i;
+            const uint32_t counterparty_id = static_cast<uint32_t>(fast_rand() % 100);
+            const int64_t price = 10000 + static_cast<int64_t>(fast_rand() % 1000);
+            const int32_t quantity = 10 + static_cast<int32_t>(fast_rand() % 100);
+
+            uint8_t is_anomaly = 0;
+
+            if (difficulty == Difficulty::EASY) {
+                // EASY: risk_score >= 0.5 is ALWAYS an anomaly
+                is_anomaly = (counterparty_id >= 50) ? 1 : 0;
+            } else if (difficulty == Difficulty::MEDIUM) {
+                // MEDIUM: High-risk = 80% anomaly, Low-risk = 10% false alarm
+                if (counterparty_id >= 50) {
+                    is_anomaly = (rand_float() < 0.80f) ? 1 : 0;
+                } else {
+                    is_anomaly = (rand_float() < 0.10f) ? 1 : 0;
+                }
+            } else {
+                // HARD: 40% base rate + 15% risk premium. High noise.
+                float anomaly_prob = 0.40f;
+                if (counterparty_id >= 50) anomaly_prob += 0.15f;
+                is_anomaly = (rand_float() < anomaly_prob) ? 1 : 0;
+            }
+
+            anomaly_count += is_anomaly;
+            ingest_trade_labeled(trade_id, price, quantity, counterparty_id,
+                                 timestamp_ns + i * 1000, is_anomaly);
+        }
+
+        return anomaly_count;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // ingest_trade_labeled() — Internal helper for generate_batch
+    // ────────────────────────────────────────────────────────────────────
+    bool ingest_trade_labeled(uint64_t trade_id, int64_t price, int32_t quantity,
+                              uint32_t counterparty_id, uint64_t timestamp_ns,
+                              uint8_t is_anomaly) {
+        const uint32_t idx = static_cast<uint32_t>(
+            trade_id & (pool_.capacity() - 1)
+        );
+
+        pool_.insert(trade_id, price, quantity,
+                    counterparty_id, timestamp_ns);
+        pool_.set_ground_truth(idx, is_anomaly);
+        timer_wheel_.schedule(idx, timestamp_ns);
+        ++total_ingested_;
+        return true;
+    }
+
+    // PRNG and Stats
+    void set_seed(uint64_t seed) { rng_state_ = seed; }
+    size_t last_tp() const { return last_tp_; }
+    size_t last_tn() const { return last_tn_; }
+    size_t last_fp() const { return last_fp_; }
+    size_t last_fn() const { return last_fn_; }
+    size_t last_expired_count() const { return last_batch_expired_count_; }
+
+    // ================================================================
     //  DIRECT INGESTION — For single-threaded mode (bypasses ring buffer)
     // ================================================================
 
@@ -453,6 +590,18 @@ private:
         return n + 1;
     }
 
+    // ── Fast PRNG (Xorshift64) ──────────────────────────────────────────
+    uint64_t rng_state_ = 12345;
+    uint64_t fast_rand() {
+        rng_state_ ^= rng_state_ << 13;
+        rng_state_ ^= rng_state_ >> 7;
+        rng_state_ ^= rng_state_ << 17;
+        return rng_state_;
+    }
+    float rand_float() {
+        return static_cast<float>(fast_rand() & 0xFFFFFF) / 16777216.0f;
+    }
+
     // ── Subsystems ──────────────────────────────────────────────────────
     OrderPool                              pool_;           // Trade storage
     TimerWheel                             timer_wheel_;    // Expiration mgmt
@@ -470,8 +619,14 @@ private:
     std::vector<float>    anomaly_matrix_;           // (N, 4) float matrix
     size_t                anomaly_capacity_;         // Current anomaly buffer capacity
 
+    std::vector<float>    reward_details_;           // Per-trade rewards
+    size_t                reward_details_capacity_;  // Current reward buffer capacity
+
     // ── Counters ────────────────────────────────────────────────────────
     size_t total_ingested_   = 0;
     size_t total_reconciled_ = 0;
     size_t total_expired_    = 0;
+
+    size_t last_batch_expired_count_ = 0;
+    size_t last_tp_ = 0, last_tn_ = 0, last_fp_ = 0, last_fn_ = 0;
 };

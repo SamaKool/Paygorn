@@ -73,3 +73,36 @@ nanobind_add_module(hft_auditor src/auditor.cpp)
 
 # Link thread library (required for atomics on some platforms)
 target_link_libraries(hft_auditor PRIVATE Threads::Threads)
+
+# ── Google Benchmark Integration ──────────────────────────────────────────
+#
+# Prevents benchmark from pulling GTest as a transitive dependency
+set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+# Disables -Werror to prevent unhandled enum warnings in sysinfo.cc from breaking the build
+set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+  benchmark
+  GIT_REPOSITORY https://github.com/google/benchmark.git
+  GIT_TAG        v1.9.1
+)
+FetchContent_MakeAvailable(benchmark)
+
+# Stands up the Google Benchmark executable (standalone, NOT a Python module)
+add_executable(hft_benchmarks benchmarks/benchmark_engine.cpp)
+
+# CRITICAL: hft_benchmarks is a C++ binary, not a nanobind module,
+# BUT reconciliation_engine.hpp includes nanobind.h. We MUST forward
+# these include paths explicitly.
+target_include_directories(hft_benchmarks PRIVATE 
+    src
+    ${nanobind_SOURCE_DIR}/include
+    ${Python_INCLUDE_DIRS}
+)
+
+# Link against benchmark_main to avoid writing a main() function
+target_link_libraries(hft_benchmarks PRIVATE 
+    benchmark::benchmark 
+    benchmark::benchmark_main 
+    Threads::Threads
+)
