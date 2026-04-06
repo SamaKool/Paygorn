@@ -2463,6 +2463,7 @@ dependencies = [
     { name = "openenv-core", extra = ["core"] },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "python-dotenv" },
     { name = "stable-baselines3", extra = ["extra"] },
 ]
 
@@ -2479,6 +2480,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "stable-baselines3", extras = ["extra"], specifier = ">=2.8.0" },
 ]
 provides-extras = ["dev"]

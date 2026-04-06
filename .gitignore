@@ -1,8 +1,17 @@
+# Build and output directories
+build/
+out/
+bin/
+*.o
+*.obj
+
+# Python caches and binaries
+__pycache__/
 *.so
 *.pyd
-build/
-__pycache__/
-*.egg-info/
+*.dylib
+
+# Virtual environments and secrets
 .venv/
-.pytest_cache/
-*.pyc
+venv/
+.env

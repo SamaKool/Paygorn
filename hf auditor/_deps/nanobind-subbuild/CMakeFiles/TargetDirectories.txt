@@ -1,0 +1,3 @@
+/home/soham/fin_auditor/hf auditor/_deps/nanobind-subbuild/CMakeFiles/nanobind-populate.dir
+/home/soham/fin_auditor/hf auditor/_deps/nanobind-subbuild/CMakeFiles/edit_cache.dir
+/home/soham/fin_auditor/hf auditor/_deps/nanobind-subbuild/CMakeFiles/rebuild_cache.dir

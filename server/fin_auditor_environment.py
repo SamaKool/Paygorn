@@ -11,7 +11,7 @@ Wraps the compiled C++ ``hft_auditor.ReconciliationEngine``.
 
 import os
 from uuid import uuid4
-import pandas as pd
+import numpy as np
 import hft_auditor
 from typing import Any, Dict, Optional
 from pydantic import Field
@@ -29,52 +29,36 @@ class FinAuditorObservation(AuditorObservation):
 class FinAuditorEnvironment(Environment):
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
     _RING_BUFFER_CAPACITY: int = 1_048_576
-    _INGEST_CHUNK_SIZE: int = 100
+    _INGEST_CHUNK_SIZE: int = 40
     _DELTA_MAX_NS: int = 5_000_000_000
-    _MAX_EPISODE_STEPS: int = 50   # hard episode boundary — prevents infinite advantage windows
-
-    _CSV_TOTAL_ROWS: int = 10000  # internal_trades.csv has ~10k data rows
+    _MAX_EPISODE_STEPS: int = 10
 
     def __init__(self) -> None:
         self._state = State(episode_id=str(uuid4()), step_count=0)
-        self._reset_count: int = 0
         self.engine = hft_auditor.ReconciliationEngine(self._RING_BUFFER_CAPACITY)
         self.sim_time_ns = 0
-        self._ingest_offset: int = 0  # tracks rolling CSV position for continuous ingestion
-
-    def _ingest_data_chunk(self) -> None:
-        """Read the next 100-row window from the CSV (wraps around at end)."""
-        csv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "internal_trades.csv"))
-
-        # Wrap the offset so we cycle through the full dataset indefinitely
-        offset = self._ingest_offset % (self._CSV_TOTAL_ROWS - self._INGEST_CHUNK_SIZE)
-        df = pd.read_csv(csv_path, skiprows=range(1, offset + 1), nrows=self._INGEST_CHUNK_SIZE)
-        self._ingest_offset += self._INGEST_CHUNK_SIZE
-
-        for row in df.itertuples(index=False):
-            trade_id: int = int(str(row.trade_id), 16)
-            price: int = int(float(row.amount))
-            quantity: int = 1
-            counterparty_id: int = int(row.counterparty_id)
-            timestamp_ns: int = 0  # Pre-age all trades to T=0 so they expire on next tick
-
-            self.engine.submit_trade(trade_id, price, quantity, counterparty_id, timestamp_ns)
+        
+        # 1. READ TASK_ID FROM ENVIRONMENT
+        task_id = os.getenv("TASK_ID", "anomaly_detection_hard").lower()
+        
+        # 2. MAP TO C++ DIFFICULTY ENUM
+        if "easy" in task_id:
+            self.difficulty = hft_auditor.Difficulty.EASY
+        elif "medium" in task_id:
+            self.difficulty = hft_auditor.Difficulty.MEDIUM
+        else:
+            self.difficulty = hft_auditor.Difficulty.HARD
 
     def reset(self) -> AuditorObservation:
         self._state = State(episode_id=str(uuid4()), step_count=0)
-        self._reset_count += 1
-        self._ingest_offset = 0  # reset CSV cursor for fresh episode
-
-        # Establish initial watermark at 5 seconds so T=0 trades expire immediately
+        
+        # We intentionally return an empty matrix on reset to bypass the 
+        # _last_reasoning scoping bug in inference.py. 
         self.sim_time_ns = self._DELTA_MAX_NS
         self.engine.tick(self._DELTA_MAX_NS)
 
-        self._ingest_data_chunk()
-
-        initial_features = self.engine.get_anomaly_matrix().tolist()
-
         return FinAuditorObservation(
-            features=initial_features,
+            features=[],
             message="Fin Auditor engine ready.",
             reward=0.0,
             done=False
@@ -82,43 +66,50 @@ class FinAuditorEnvironment(Environment):
 
     def step(self, action: AuditorAction) -> AuditorObservation:  # type: ignore[override]
         self._state.step_count += 1
-        self.sim_time_ns += 100_000_000
-        self.engine.tick(self.sim_time_ns)
 
-        # Ingest the next window of trades — keeps the anomaly matrix non-empty
-        # across all MAX_STEPS iterations
-        self._ingest_data_chunk()
-
-        anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
-        total_anomalies = len(anomalies)
-        correct_audits = 0
-
-        if total_anomalies > 0 and action and action.decisions:
-            n = min(total_anomalies, len(action.decisions))
-            for i in range(n):
-                # Any FLAG (2) decision on a confirmed anomaly is a correct audit.
-                # The C++ engine only surfaces expired/unreconciled trades, so
-                # every entry in the matrix is a true positive candidate.
-                if action.decisions[i] == 2:
-                    correct_audits += 1
-
-        # Density-based reward: fraction of anomalies correctly flagged.
-        # This provides a dense, continuous signal in [0.0, 1.0] that PPO can
-        # differentiate — replacing the sparse penalty logic that caused NaN collapse.
-        if total_anomalies > 0:
-            normalized_reward = float(correct_audits) / float(total_anomalies)
+        # 1. REWARD CALCULATION (Using C++ Engine)
+        # We must calculate reward for the PREVIOUS step's matrix before we overwrite it.
+        # This uses the true False Positive / True Negative logic from Samarth's engine.
+        step_reward = 0.0
+        if action and action.decisions:
+            # Cast actions to uint8 array for nanobind
+            action_array = np.array(action.decisions, dtype=np.uint8)
+            step_reward = float(self.engine.compute_reward(action_array))
+            
+            # Normalize the raw reward so the max possible is 1.0 per trade
+            # The maximum possible reward per batch is _INGEST_CHUNK_SIZE * REWARD_TRUE_POSITIVE
+            max_possible_reward = self._INGEST_CHUNK_SIZE * 1.0 
+            normalized_reward = step_reward / max_possible_reward
         else:
             normalized_reward = 0.0
 
-        # Hard clamp: guarantee the grader boundary is never violated
+        # Hard clamp
         normalized_reward = max(0.0, min(1.0, normalized_reward))
 
-        # Episode terminates at the step limit so PPO can compute advantages
+        # 2. GENERATE NEW DATA (Using procedural C++ engine)
+        # Replaces the old CSV ingestion logic
+        self.engine.generate_batch(self.difficulty, self._INGEST_CHUNK_SIZE, self.sim_time_ns)
+        
+        # 3. ADVANCE TIME & EXPIRE
+        # Jump time forward by 6 seconds to guarantee the batch expires immediately
+        self.sim_time_ns += 6_000_000_000
+        self.engine.tick(self.sim_time_ns)
+
+        # 4. EXTRACT NEW MATRIX
+        anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
+        total_anomalies = len(anomalies)
+
         done = self._state.step_count >= self._MAX_EPISODE_STEPS
+
+        # Expose C++ tracking metrics to the Python state so inference.py can log them
+        self._state.last_tp = self.engine.last_tp
+        self._state.last_tn = self.engine.last_tn
+        self._state.last_fp = self.engine.last_fp
+        self._state.last_fn = self.engine.last_fn
 
         return FinAuditorObservation(
             features=anomalies,
-            message=f"Processed batch. Found {total_anomalies} anomalies. correct={correct_audits}",
+            message=f"Processed batch. Found {total_anomalies} expired trades.",
             reward=normalized_reward,
             done=done
         )
