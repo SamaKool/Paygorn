@@ -34,11 +34,7 @@ COPY . /app/env
 WORKDIR /app/env
 
 # Ensure uv is available
-RUN if ! command -v uv >/dev/null 2>&1; then \
-    curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    mv /root/.local/bin/uv /usr/local/bin/uv && \
-    mv /root/.local/bin/uvx /usr/local/bin/uvx; \
-    fi
+RUN pip install uv
 
 # Install Python dependencies
 RUN --mount=type=cache,target=/root/.cache/uv \
