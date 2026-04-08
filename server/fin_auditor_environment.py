@@ -10,9 +10,56 @@ Wraps the compiled C++ ``hft_auditor.ReconciliationEngine``.
 """
 
 import os
+import sys
+import glob
+import importlib.util
 from uuid import uuid4
 import numpy as np
-import hft_auditor
+
+# ── Native Engine Bridge ─────────────────────────────────────────────────────
+def _load_native_engine():
+    """Surgically discovers and loads the compiled C++ binary (.so or .pyd)."""
+    # 1. Try standard import first
+    try:
+        import hft_auditor
+        return hft_auditor
+    except ImportError:
+        pass
+
+    # 2. Search root directory (parent of 'server')
+    _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+    _ROOT_DIR = os.path.abspath(os.path.join(_CURRENT_DIR, ".."))
+    
+    patterns = [
+        os.path.join(_ROOT_DIR, "hft_auditor*.pyd"),
+        os.path.join(_ROOT_DIR, "hft_auditor*.so"),
+        os.path.join(_ROOT_DIR, "hf auditor/build/**/hft_auditor*.pyd"),
+        os.path.join(_ROOT_DIR, "hf auditor/build/**/hft_auditor*.so"),
+    ]
+    
+    lib_files = []
+    for p in patterns:
+        lib_files.extend(glob.glob(p, recursive=True))
+    
+    if not lib_files:
+        return None
+        
+    try:
+        lib_path = lib_files[0]
+        spec = importlib.util.spec_from_file_location("hft_auditor", lib_path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["hft_auditor"] = module
+        spec.loader.exec_module(module)
+        return module
+    except Exception as e:
+        print(f"[CRITICAL] Native loading failed: {e}")
+        return None
+
+hft_auditor = _load_native_engine()
+# ─────────────────────────────────────────────────────────────────────────────
+
 from typing import Any, Dict, Optional
 from pydantic import Field
 
@@ -54,8 +101,8 @@ class FinAuditorEnvironment(Environment):
         
         # We intentionally return an empty matrix on reset to bypass the 
         # _last_reasoning scoping bug in inference.py. 
-        self.sim_time_ns = self._DELTA_MAX_NS
-        self.engine.tick(self._DELTA_MAX_NS)
+        self.sim_time_ns += self._DELTA_MAX_NS
+        self.engine.tick(self.sim_time_ns)
 
         return FinAuditorObservation(
             features=[],
@@ -68,23 +115,12 @@ class FinAuditorEnvironment(Environment):
         self._state.step_count += 1
 
         # 1. REWARD CALCULATION (Using C++ Engine)
-        # We must calculate reward for the PREVIOUS step's matrix before we overwrite it.
-        # This uses the true False Positive / True Negative logic from Samarth's engine.
         step_reward = 0.0
         if action and action.decisions:
             # Cast actions to uint8 array for nanobind
             action_array = np.array(action.decisions, dtype=np.uint8)
+            # Just grab the raw score from the C++ engine!
             step_reward = float(self.engine.compute_reward(action_array))
-            
-            # Normalize the raw reward so the max possible is 1.0 per trade
-            # The maximum possible reward per batch is _INGEST_CHUNK_SIZE * REWARD_TRUE_POSITIVE
-            max_possible_reward = self._INGEST_CHUNK_SIZE * 1.0 
-            normalized_reward = step_reward / max_possible_reward
-        else:
-            normalized_reward = 0.0
-
-        # Hard clamp
-        normalized_reward = max(0.0, min(1.0, normalized_reward))
 
         # 2. GENERATE NEW DATA (Using procedural C++ engine)
         # Replaces the old CSV ingestion logic
@@ -110,7 +146,7 @@ class FinAuditorEnvironment(Environment):
         return FinAuditorObservation(
             features=anomalies,
             message=f"Processed batch. Found {total_anomalies} expired trades.",
-            reward=normalized_reward,
+            reward=step_reward,  # <-- Use the raw step_reward here
             done=done
         )
 

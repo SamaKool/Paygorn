@@ -37,7 +37,7 @@ from models import AuditorAction
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
 N_FEATURES      = 4    # [time_elapsed, price_delta, missing_frequency, risk_score]
-MAX_TRADES      = 100  # maximum anomalies per step (== INGEST_CHUNK_SIZE)
+MAX_TRADES      = 40  # maximum anomalies per step (== INGEST_CHUNK_SIZE)
 TOTAL_TIMESTEPS = 100_000
 SAVE_FREQ       = 5_000
 LOG_DIR         = "./logs/"
@@ -50,8 +50,8 @@ class GymnasiumFinAuditorEnv(gym.Env):
 
     Observation: flat float32 array of shape (MAX_TRADES * N_FEATURES,)
                  Values clipped to [0.0, 1.0] to prevent NaN gradients.
-    Action:      MultiDiscrete([3] * MAX_TRADES)
-                 0=PASS, 1=INVESTIGATE, 2=FLAG per trade slot.
+    Action:      MultiDiscrete([2] * MAX_TRADES)
+                 0=PASS, 1=FLAG per trade slot.
     """
 
     metadata = {"render_modes": []}
@@ -71,7 +71,7 @@ class GymnasiumFinAuditorEnv(gym.Env):
         )
 
         # One discrete decision per trade slot
-        self.action_space = spaces.MultiDiscrete([3] * MAX_TRADES)
+        self.action_space = spaces.MultiDiscrete([2] * MAX_TRADES)
 
     def _process_obs(self, features: list[list[float]]) -> np.ndarray:
         """Flatten the anomaly matrix into a fixed-size float32 vector."""
@@ -143,9 +143,9 @@ def main() -> None:
         env,
         verbose=1,
         device="cpu",
-        n_steps=256,          # rollout buffer length per env per update
+        n_steps=2048,          # rollout buffer length per env per update
         batch_size=64,
-        n_epochs=4,
+        n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
