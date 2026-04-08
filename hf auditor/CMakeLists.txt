@@ -47,7 +47,7 @@ endif()
 find_package(Threads REQUIRED)
 
 # ── Python + Nanobind ───────────────────────────────────────────────────────
-find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
+find_package(Python 3.8 COMPONENTS Interpreter Development REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -105,4 +105,6 @@ target_link_libraries(hft_benchmarks PRIVATE
     benchmark::benchmark 
     benchmark::benchmark_main 
     Threads::Threads
-)
+    Python::Python
+    nanobind-static
+)

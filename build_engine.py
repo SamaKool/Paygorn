@@ -16,6 +16,7 @@ The script:
      this directory.
 """
 
+import os
 import platform
 import shutil
 import subprocess
@@ -26,15 +27,17 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-ROOT = Path(__file__).resolve().parent          # project root  (fin_auditor/)
-SOURCE_DIR = ROOT / "hf auditor"               # note: directory has a space
+ROOT = Path(__file__).resolve().parent  # project root  (fin_auditor/)
+SOURCE_DIR = ROOT / "hf auditor"  # note: directory has a space
 BUILD_DIR = SOURCE_DIR / "build"
 
 # Glob patterns for the compiled extension in the build tree
 SO_PATTERNS = ["hft_auditor*.so", "hft_auditor*.pyd"]
 
 # Destination files that should be removed from the project root on clean
-ROOT_ARTEFACTS = list(ROOT.glob("hft_auditor*.so")) + list(ROOT.glob("hft_auditor*.pyd"))
+ROOT_ARTEFACTS = list(ROOT.glob("hft_auditor*.so")) + list(
+    ROOT.glob("hft_auditor*.pyd")
+)
 
 
 # ---------------------------------------------------------------------------
@@ -43,26 +46,33 @@ ROOT_ARTEFACTS = list(ROOT.glob("hft_auditor*.so")) + list(ROOT.glob("hft_audito
 def run(cmd: list[str], *, description: str = "") -> None:
     """Run *cmd* with real-time stdout/stderr passthrough."""
     if description:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"  {description}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
     print(f"$ {' '.join(cmd)}\n")
-    result = subprocess.run(cmd, check=True)   # noqa: S603
+    result = subprocess.run(cmd, check=True)  # noqa: S603
     return result
 
 
 def clean() -> None:
     """Remove existing build artefacts."""
-    print("\n── Clean ─────────────────────────────────────────────────────")
+    print("\n-- Clean -----------------------------------------------------")
 
     if BUILD_DIR.exists():
         print(f"  Removing build directory: {BUILD_DIR}")
-        shutil.rmtree(BUILD_DIR)
+
+        def remove_readonly(func, path, excinfo):
+            os.chmod(path, 0o777)
+            func(path)
+
+        shutil.rmtree(BUILD_DIR, onerror=remove_readonly)
     else:
         print(f"  Build directory not found (nothing to remove): {BUILD_DIR}")
 
-    for path in (list(ROOT.glob("hft_auditor*.so")) + list(ROOT.glob("hft_auditor*.pyd"))):
+    for path in list(ROOT.glob("hft_auditor*.so")) + list(
+        ROOT.glob("hft_auditor*.pyd")
+    ):
         print(f"  Removing root artefact: {path}")
         path.unlink()
 
@@ -73,8 +83,10 @@ def cmake_configure(os_name: str, docker_safe: bool = False) -> None:
     """Run the CMake configure step."""
     cmd = [
         "cmake",
-        "-B", str(BUILD_DIR),
-        "-S", str(SOURCE_DIR),
+        "-B",
+        str(BUILD_DIR),
+        "-S",
+        str(SOURCE_DIR),
         f"-DCMAKE_BUILD_TYPE=Release",
     ]
 
@@ -104,7 +116,7 @@ def copy_to_root() -> Path:
     Walk the build tree looking for the compiled extension and copy it to the
     project root.  Returns the destination path.
     """
-    print("\n── Post-Build: Locate & Copy Extension ───────────────────────")
+    print("\n-- Post-Build: Locate & Copy Extension -----------------------")
 
     found: list[Path] = []
     for pattern in SO_PATTERNS:
@@ -143,7 +155,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    os_name = platform.system()   # 'Linux', 'Windows', or 'Darwin'
+    os_name = platform.system()  # 'Linux', 'Windows', or 'Darwin'
     print(f"Detected OS : {os_name}")
     if args.docker_safe:
         print("Mode       : DOCKER_SAFE (--parallel 1, -O1)")

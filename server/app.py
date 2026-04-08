@@ -10,7 +10,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import List
 
-# Ensure the C++ engine can be found if running in the same dir
+# Ensure the C++ engine can be found from the parent directory
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.getcwd())
 
 # Import the environment from your existing codebase
