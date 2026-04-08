@@ -1,0 +1,27 @@
+# Build and output directories
+build/
+out/
+bin/
+*.o
+*.obj
+
+# CMake & Compile Cache
+**/CMakeFiles/
+**/CMakeCache.txt
+**/*.cmake
+**/Makefile
+**/_deps/
+
+# Python caches and binaries
+__pycache__/
+*.pyd
+*.dylib
+*.a
+
+# Blaclist ALL BINARIES
+*.so
+
+# Virtual environments and secrets
+.venv/
+venv/
+.env
