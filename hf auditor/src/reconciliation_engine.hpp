@@ -309,11 +309,10 @@ public:
     const double delta_max_d = static_cast<double>(TimerWheel::DELTA_MAX_NS);
     size_t row = 0;
 
-    for (size_t i = 0; i < pool_.capacity() && row < active; ++i) {
-      if (pool_.get_state(i) != SlotState::ACTIVE)
-        continue;
-
-      const auto &slot = pool_.slot_at(i);
+    const uint32_t* active_indices = pool_.active_indices();
+    for (size_t i = 0; i < active; ++i) {
+      const uint32_t idx = active_indices[i];
+      const auto &slot = pool_.slot_at(idx);
       float *out = &observation_matrix_[row * 4];
 
       // Col 0: time_elapsed — normalized seconds since trade ingestion

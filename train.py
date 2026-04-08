@@ -62,10 +62,10 @@ class GymnasiumFinAuditorEnv(gym.Env):
 
         obs_size = MAX_TRADES * N_FEATURES
 
-        # FIX: Bounded [0.0, 1.0] instead of ±inf — prevents gradient explosion
+        # Normalization and clipping are now handled by VecNormalize wrapper in main()
         self.observation_space = spaces.Box(
-            low=0.0,
-            high=1.0,
+            low=-np.inf,
+            high=np.inf,
             shape=(obs_size,),
             dtype=np.float32,
         )
@@ -74,20 +74,14 @@ class GymnasiumFinAuditorEnv(gym.Env):
         self.action_space = spaces.MultiDiscrete([3] * MAX_TRADES)
 
     def _process_obs(self, features: list[list[float]]) -> np.ndarray:
-        """
-        Flatten the anomaly matrix into a fixed-size float32 vector.
-
-        Pads with zeros for empty slots and CLIPS all values to [0.0, 1.0]
-        to cancel any out-of-range values returned by the C++ engine.
-        The clip is the safeguard against NaN/inf cascading into PPO gradients.
-        """
+        """Flatten the anomaly matrix into a fixed-size float32 vector."""
         flat = np.zeros(MAX_TRADES * N_FEATURES, dtype=np.float32)
         for i, row in enumerate(features[:MAX_TRADES]):
             for j, val in enumerate(row[:N_FEATURES]):
                 flat[i * N_FEATURES + j] = float(val)
 
-        # FIX: clip to the declared bounds before the policy network sees the obs
-        return np.clip(flat, 0.0, 1.0)
+        # Padding and normalization are handled by the vectorized environment wrapper.
+        return flat
 
     def reset(
         self,
@@ -123,12 +117,19 @@ class GymnasiumFinAuditorEnv(gym.Env):
 def main() -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
 
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+
     env = GymnasiumFinAuditorEnv()
 
-    # Sanity-check the environment before handing it to SB3
+    # Sanity-check the raw environment before vectorization
     print("[TRAIN] Running Gymnasium environment check...")
     check_env(env, warn=True)
     print("[TRAIN] Environment check passed.\n")
+    
+    # WRAP: Use DummyVecEnv and VecNormalize for robust training.
+    # SB3 requires vectorized environments for several wrappers.
+    env = DummyVecEnv([lambda: env])
+    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
     checkpoint_callback = CheckpointCallback(
         save_freq=SAVE_FREQ,

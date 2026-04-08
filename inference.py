@@ -147,7 +147,18 @@ def _call_llm(step: int, features: list[list[float]]) -> list[int]:
         except Exception as e:
             time.sleep(1)
 
-    return [1] * len(features)
+    # HEURISTIC FALLBACK: If JSON parsing fails, use a logic-based guess.
+    # From domain knowledge, risk_score (index 3) >= 0.7 is a strong anomaly signal.
+    fallback_decisions = []
+    for row in features:
+        if len(row) >= 4:
+            # Column 3 is risk_score. If >= 0.7, flag as anomaly (1).
+            fallback_decisions.append(1 if row[3] >= 0.7 else 0)
+        else:
+            # Safe default for malformed data
+            fallback_decisions.append(1)
+            
+    return fallback_decisions
 
 def run_inference() -> None:
     episode_id: str = "unknown"

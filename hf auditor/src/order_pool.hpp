@@ -80,6 +80,8 @@ public:
         slots_.resize(capacity);
         states_.resize(capacity, SlotState::EMPTY);
         ground_truth_.resize(capacity, 0);
+        active_indices_.resize(capacity);
+        slot_to_active_idx_.resize(capacity, UINT32_MAX);
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -104,12 +106,8 @@ public:
         slot.counterparty_id = counterparty_id;
         slot.timestamp_ns    = timestamp_ns;
 
-        // Only increment active count if slot wasn't already ACTIVE
-        // (handles the overwrite case)
-        if (states_[idx] != SlotState::ACTIVE) {
-            ++active_count_;
-        }
-        states_[idx] = SlotState::ACTIVE;
+        // Maintain the sparse set via set_state
+        set_state(idx, SlotState::ACTIVE);
 
         return true;
     }
@@ -150,12 +148,29 @@ public:
     SlotState get_state(size_t idx) const { return states_[idx]; }
 
     void set_state(size_t idx, SlotState new_state) {
-        // Maintain the active_count_ invariant
-        if (states_[idx] == SlotState::ACTIVE && new_state != SlotState::ACTIVE) {
+        const SlotState old_state = states_[idx];
+        if (old_state == new_state) return;
+
+        // Maintain the sparse set and active_count_ invariant
+        if (old_state == SlotState::ACTIVE) {
+            // REMOVE from sparse set via Swap-and-Pop
+            const uint32_t pos = slot_to_active_idx_[idx];
+            const uint32_t last_idx = active_indices_[active_count_ - 1];
+            
+            active_indices_[pos] = last_idx;
+            slot_to_active_idx_[last_idx] = pos;
+            
+            slot_to_active_idx_[idx] = UINT32_MAX;
             --active_count_;
-        } else if (states_[idx] != SlotState::ACTIVE && new_state == SlotState::ACTIVE) {
+        } 
+        
+        if (new_state == SlotState::ACTIVE) {
+            // ADD to sparse set
+            active_indices_[active_count_] = static_cast<uint32_t>(idx);
+            slot_to_active_idx_[idx] = static_cast<uint32_t>(active_count_);
             ++active_count_;
         }
+        
         states_[idx] = new_state;
     }
 
@@ -182,6 +197,9 @@ public:
     TradeSlot*       data()       { return slots_.data(); }
     const TradeSlot* data() const { return slots_.data(); }
 
+    // Dense array of active indices for O(active_count) iteration
+    const uint32_t* active_indices() const { return active_indices_.data(); }
+
 private:
     size_t capacity_;                    // Always power of 2
     size_t mask_;                        // capacity_ - 1, for bitwise AND
@@ -190,4 +208,8 @@ private:
     std::vector<TradeSlot> slots_;       // 32 bytes × capacity — trade data
     std::vector<SlotState> states_;      // 1 byte  × capacity — slot states
     std::vector<uint8_t>   ground_truth_; // 1 byte  × capacity — 0=safe, 1=anomaly
+    
+    // Sparse Set for O(1) iteration over active counts
+    std::vector<uint32_t> active_indices_;      // Dense array of active slot indices
+    std::vector<uint32_t> slot_to_active_idx_;  // Maps slot index -> position in active_indices_
 };
