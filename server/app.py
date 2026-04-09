@@ -48,7 +48,7 @@ env = FinAuditorEnvironment() if (HAS_ENV and NATIVE_VERIFIED) else None
 
 # OpenEnv Compliance: Ensure endpoints exist even in MOCK mode to prevent 404s
 if env:
-    app = create_app(env)
+    app = create_app(env, action_cls=AuditorAction, observation_cls=AuditorObservation)
 else:
     app = FastAPI(title="PayGorn (MOCK MODE)")
     @app.post("/reset")
