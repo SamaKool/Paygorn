@@ -87,7 +87,7 @@ llm_session = {
 }
 
 class LLMConfig(BaseModel):
-    api_key: str
+    api_key: str = ""  # Default to empty string to allow default token usage
     model_name: Optional[str] = None
     base_url: Optional[str] = None
 
@@ -186,10 +186,13 @@ async def get_dashboard_action(req: ActionRequest):
 
 @app.post("/config/llm")
 async def config_llm(cfg: LLMConfig):
-    if not cfg.api_key:
-        raise HTTPException(status_code=400, detail="API Key cannot be blank")
-    
     api_key = cfg.api_key
+    # Fallback to session key if UI sends blank string and default token is active
+    if not api_key:
+        api_key = llm_session.get("api_key")
+        if not api_key:
+            raise HTTPException(status_code=400, detail="API Key cannot be blank")
+    
     base_url = "https://router.huggingface.co/v1"
     
     if api_key.startswith("AIza"):
@@ -518,6 +521,9 @@ async def root_dashboard():
     <script>
     const consoleOut = document.getElementById('console-out');
     const ledgerBody = document.getElementById('ledger-body');
+    
+    // TRACKING STATE FOR ZERO-CONFIG
+    let usingDefaultToken = false;
 
     function logMsg(msg, type='info') {
         const div = document.createElement('div');
@@ -587,6 +593,9 @@ async def root_dashboard():
     async function discoverModels() {
         const key = document.getElementById('api-key').value;
         if(!key) return;
+        
+        // If user manually types a key, they are no longer using the default
+        usingDefaultToken = false;
 
         logMsg("Validating key and mapping models...", "info");
         const res = await fetch('/config/llm', {
@@ -614,17 +623,24 @@ async def root_dashboard():
     async function saveConfig() {
         const key = document.getElementById('api-key').value;
         const model = document.getElementById('model-select').value;
-        if(!key || !model) { logMsg("Key/Model missing.", "err"); return; }
+        
+        // Check if model is missing, OR if both the input is empty AND the default token isn't active
+        if (!model || (!key && !usingDefaultToken)) { 
+            logMsg("Key/Model missing.", "err"); 
+            return; 
+        }
 
         const res = await fetch('/config/llm', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({api_key: key, model_name: model})
+            body: JSON.stringify({api_key: key || "", model_name: model})
         });
         const data = await res.json();
         if(data.status === 'success') {
             logMsg(data.message, "success");
             updateState();
+        } else {
+            logMsg(data.message, "err");
         }
     }
 
@@ -633,6 +649,7 @@ async def root_dashboard():
         const res = await fetch('/config/default', {method: 'POST'});
         const data = await res.json();
         if(data.status === 'success') {
+            usingDefaultToken = true;
             const select = document.getElementById('model-select');
             select.innerHTML = '';
             data.models.forEach(m => {
