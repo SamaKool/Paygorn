@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-#latest btw
 import os
 import sys
 import json
@@ -155,14 +154,11 @@ def _call_llm(step: int, features: list[list[float]]) -> list[int]:
             time.sleep(1)
 
     # HEURISTIC FALLBACK: If JSON parsing fails, use a logic-based guess.
-    # From domain knowledge, risk_score (index 3) >= 0.7 is a strong anomaly signal.
     fallback_decisions = []
     for row in features:
         if len(row) >= 4:
-            # Column 3 is risk_score. If >= 0.7, flag as anomaly (1).
             fallback_decisions.append(1 if row[3] >= 0.7 else 0)
         else:
-            # Safe default for malformed data
             fallback_decisions.append(1)
             
     return fallback_decisions
@@ -178,18 +174,16 @@ def run_inference() -> None:
         obs = env.reset()
         episode_id = getattr(env.state, 'episode_id', "test_run")
 
-        # START LOG
-        print(json.dumps({
-            "tag": "[START]", 
+        # FIX: The grader expects the tag as the absolute first string on the line
+        start_payload = {
             "episode_id": episode_id, 
             "model": MODEL_NAME, 
             "difficulty": TASK_ID, 
             "max_steps": MAX_STEPS
-        }))
-        sys.stdout.flush()
+        }
+        print(f"[START] {json.dumps(start_payload)}", flush=True)
 
         for step_num in range(1, MAX_STEPS + 1):
-            # SAFE INITIALIZATION to prevent UnboundLocalError
             step_reward = 0.0  
             features = obs.features
 
@@ -205,9 +199,8 @@ def run_inference() -> None:
             total_reward += step_reward
             steps_completed = step_num
 
-            # STEP LOG (ADDED DONE, ERROR, AND 2 DECIMAL ROUNDING)
-            print(json.dumps({
-                "tag": "[STEP]",
+            # FIX: Prefix [STEP] string before the JSON payload
+            step_payload = {
                 "step": step_num,
                 "anomalies": len(features),
                 "reward": round(float(step_reward), 2),
@@ -219,8 +212,8 @@ def run_inference() -> None:
                 "tn": getattr(env.state, 'last_tn', 0),
                 "fp": getattr(env.state, 'last_fp', 0),
                 "fn": getattr(env.state, 'last_fn', 0)
-            }))
-            sys.stdout.flush()
+            }
+            print(f"[STEP] {json.dumps(step_payload)}", flush=True)
 
             if obs.done:
                 break
@@ -231,15 +224,14 @@ def run_inference() -> None:
         status = "ERROR"
         traceback.print_exc(file=sys.stderr)
 
-    # END LOG
+    # FIX: Prefix [END] string before the JSON payload
     avg_reward = total_reward / max(steps_completed, 1)
-    print(json.dumps({
-        "tag": "[END]", 
+    end_payload = {
         "total_reward": float(total_reward), 
         "avg_reward": float(avg_reward),
         "status": status
-    }))
-    sys.stdout.flush()
+    }
+    print(f"[END] {json.dumps(end_payload)}", flush=True)
 
 if __name__ == "__main__":
     run_inference()
