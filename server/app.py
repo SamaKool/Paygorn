@@ -710,11 +710,11 @@ async def root_dashboard():
 
             logMsg(`Executing Step with ${actionData.decisions.length} decisions...`, "info");
 
-            // REVERTED: Send exactly what OpenEnv expects (No nested wrappers)
+            // FIX: Wrap the payload in the 'action' key required by OpenEnv
             const res = await fetch('/step', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(actionData) 
+                body: JSON.stringify({ action: actionData }) 
             });
             
             if (!res.ok) {
