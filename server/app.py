@@ -26,13 +26,12 @@ if _CURRENT_DIR not in sys.path:
     sys.path.insert(0, _CURRENT_DIR)
 
 try:
-    # 1. Import the environment AND the safely loaded C++ module
     from fin_auditor_environment import FinAuditorEnvironment, hft_auditor
     from models import AuditorAction, AuditorObservation
     
     HAS_ENV = True
     NATIVE_VERIFIED = hft_auditor is not None
-    hft_mod = hft_auditor  # Create the alias app.py expects to use for Difficulty settings
+    hft_mod = hft_auditor
 
 except ImportError as e:
     HAS_ENV = False
@@ -44,11 +43,20 @@ except ImportError as e:
 # ==============================================================================
 # PHASE 2: SYSTEM STATE & AUTHORITY TRACKING
 # ==============================================================================
-env = FinAuditorEnvironment() if (HAS_ENV and NATIVE_VERIFIED) else None
 
-# OpenEnv Compliance: Ensure endpoints exist even in MOCK mode to prevent 404s
-if env:
-    app = create_app(FinAuditorEnvironment, AuditorAction, AuditorObservation)
+# FIX: Global pointer to capture the OpenEnv-managed instance
+active_env_instance = None
+
+if HAS_ENV and NATIVE_VERIFIED:
+    class TrackedFinAuditorEnvironment(FinAuditorEnvironment):
+        """Wrapper class to capture the environment instance created by OpenEnv"""
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            global active_env_instance
+            active_env_instance = self
+            
+    # OpenEnv creates the FastAPI app and instantiates TrackedFinAuditorEnvironment internally
+    app = create_app(TrackedFinAuditorEnvironment, AuditorAction, AuditorObservation)
 else:
     app = FastAPI(title="PayGorn (MOCK MODE)")
     @app.post("/reset")
@@ -60,7 +68,6 @@ app_metrics = {"last_step_latency_us": 0.0}
 
 @app.middleware("http")
 async def capture_step_latency(request: Request, call_next):
-    """TASK 1: Captures true end-to-end latency of the C++ bridge."""
     if request.url.path == "/step":
         start_ns = time.perf_counter_ns()
         response = await call_next(request)
@@ -87,7 +94,7 @@ llm_session = {
 }
 
 class LLMConfig(BaseModel):
-    api_key: str = ""  # Default to empty string to allow default token usage
+    api_key: str = "" 
     model_name: Optional[str] = None
     base_url: Optional[str] = None
 
@@ -134,13 +141,14 @@ async def execute_llm_step(api_key: str, base_url: str, model_name: str, batch_s
 # ==============================================================================
 @app.get("/state")
 async def get_state():
-    if not env:
+    # FIX: Check the dynamically tracked instance instead of the old static one
+    if not active_env_instance:
         return {"status": "FALLBACK_MOCK_MODE", "health": system_health, "accuracy": 0.0, "latency_us": 0.0, "throughput_m": 0.0, "buffer_saturation": 0.0, "active_count": 0, "total_ingested": 0, "step_count": 0, "difficulty": "EASY", "metrics": {"tp": 0, "tn": 0, "fp": 0, "fn": 0}}
 
-    tp = getattr(env.state, 'last_tp', 0)
-    fp = getattr(env.state, 'last_fp', 0)
-    tn = getattr(env.state, 'last_tn', 0)
-    fn = getattr(env.state, 'last_fn', 0)
+    tp = getattr(active_env_instance.state, 'last_tp', 0)
+    fp = getattr(active_env_instance.state, 'last_fp', 0)
+    tn = getattr(active_env_instance.state, 'last_tn', 0)
+    fn = getattr(active_env_instance.state, 'last_fn', 0)
     
     accuracy = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     latency_us = app_metrics["last_step_latency_us"] 
@@ -152,13 +160,13 @@ async def get_state():
         "latency_us": round(latency_us, 3),
         "latency_source": "grounded_app_middleware", 
         "throughput_m": round((40 * 1e6) / (latency_us * 1000), 2) if latency_us > 0 else 0.0,
-        "active_count": env.engine.active_count,
-        "total_ingested": env.engine.total_ingested,
-        "ring_buffer_size": env.engine.ring_buffer_size,
-        "buffer_saturation": (env.engine.ring_buffer_size / env.engine.pool_capacity) * 100,
-        "step_count": env.state.step_count,
+        "active_count": active_env_instance.engine.active_count,
+        "total_ingested": active_env_instance.engine.total_ingested,
+        "ring_buffer_size": active_env_instance.engine.ring_buffer_size,
+        "buffer_saturation": (active_env_instance.engine.ring_buffer_size / active_env_instance.engine.pool_capacity) * 100,
+        "step_count": active_env_instance.state.step_count,
         "metrics": {"tp": tp, "tn": tn, "fp": fp, "fn": fn},
-        "difficulty": getattr(env, 'difficulty', "EASY")
+        "difficulty": getattr(active_env_instance, 'difficulty', "EASY")
     }
 
 @app.post("/dashboard/get_action")
@@ -167,12 +175,10 @@ async def get_dashboard_action(req: ActionRequest):
     if req.action_type == "perfect":
         decisions = [1] * batch_size 
     elif req.action_type == "llm":
-        # FIX: Read directly from llm_session memory to bypass OS environment sync issues
         api_key = llm_session.get("api_key")
         base_url = llm_session.get("base_url")
         model_name = llm_session.get("model_name")
         
-        # Fallback to the first available model if none explicitly selected
         if not model_name and llm_session.get("available_models"):
             model_name = llm_session["available_models"][0]
             
@@ -187,14 +193,12 @@ async def get_dashboard_action(req: ActionRequest):
 @app.post("/config/llm")
 async def config_llm(cfg: LLMConfig):
     api_key = cfg.api_key
-    # Fallback to session key if UI sends blank string and default token is active
     if not api_key:
         api_key = llm_session.get("api_key")
         if not api_key:
             raise HTTPException(status_code=400, detail="API Key cannot be blank")
     
     base_url = "https://router.huggingface.co/v1"
-    
     if api_key.startswith("AIza"):
         base_url = "https://generativelanguage.googleapis.com/v1beta/openai/" 
     elif api_key.startswith("sk-ant"):
@@ -202,7 +206,6 @@ async def config_llm(cfg: LLMConfig):
     
     try:
         client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=2)
-        
         try:
             response = await client.models.list()
             model_list = [m.id for m in response.data]
@@ -212,23 +215,17 @@ async def config_llm(cfg: LLMConfig):
             else:
                 raise e
         
-        # Save baseline session variables
         llm_session["api_key"] = api_key
         llm_session["base_url"] = base_url
         llm_session["available_models"] = model_list
-        
         system_health["key_validated"] = True
         system_health["model_detected"] = len(model_list) > 0
         
         if cfg.model_name and cfg.model_name in model_list:
-            # FIX: Explicitly save model_name into memory
             llm_session["model_name"] = cfg.model_name
-            
-            # (Optional) Keep OS environ for other scripts, but app.py won't rely on it
             os.environ["MODEL_NAME"] = cfg.model_name
             os.environ["LLM_API_KEY"] = api_key
             os.environ["API_BASE_URL"] = base_url
-            
             system_health["connected"] = True
             msg = f"Injected {cfg.model_name} credentials."
         else:
@@ -251,14 +248,14 @@ async def config_default():
 
 @app.post("/config/difficulty")
 async def set_difficulty(cfg: DifficultyConfig):
-    if env and NATIVE_VERIFIED:
+    if active_env_instance and NATIVE_VERIFIED:
         os.environ["TASK_ID"] = cfg.level.lower()
         if "easy" in cfg.level.lower():
-            env.difficulty = hft_mod.Difficulty.EASY
+            active_env_instance.difficulty = hft_mod.Difficulty.EASY
         elif "medium" in cfg.level.lower():
-            env.difficulty = hft_mod.Difficulty.MEDIUM
+            active_env_instance.difficulty = hft_mod.Difficulty.MEDIUM
         else:
-            env.difficulty = hft_mod.Difficulty.HARD
+            active_env_instance.difficulty = hft_mod.Difficulty.HARD
         return {"status": "success", "difficulty": cfg.level}
     return {"status": "error", "message": "Engine not loaded"}
 
@@ -267,12 +264,12 @@ async def websocket_telemetry(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
-            if env and NATIVE_VERIFIED:
+            if active_env_instance and NATIVE_VERIFIED:
                 data = {
-                    "active_count": env.engine.active_count,
-                    "total_ingested": env.engine.total_ingested,
-                    "ring_buffer_size": env.engine.ring_buffer_size,
-                    "pool_capacity": env.engine.pool_capacity,
+                    "active_count": active_env_instance.engine.active_count,
+                    "total_ingested": active_env_instance.engine.total_ingested,
+                    "ring_buffer_size": active_env_instance.engine.ring_buffer_size,
+                    "pool_capacity": active_env_instance.engine.pool_capacity,
                     "latency_us": round(app_metrics["last_step_latency_us"], 3),
                     "status": "NATIVE_ACTIVE"
                 }
@@ -521,8 +518,6 @@ async def root_dashboard():
     <script>
     const consoleOut = document.getElementById('console-out');
     const ledgerBody = document.getElementById('ledger-body');
-    
-    // TRACKING STATE FOR ZERO-CONFIG
     let usingDefaultToken = false;
 
     function logMsg(msg, type='info') {
@@ -593,10 +588,7 @@ async def root_dashboard():
     async function discoverModels() {
         const key = document.getElementById('api-key').value;
         if(!key) return;
-        
-        // If user manually types a key, they are no longer using the default
         usingDefaultToken = false;
-
         logMsg("Validating key and mapping models...", "info");
         const res = await fetch('/config/llm', {
             method: 'POST',
@@ -604,7 +596,6 @@ async def root_dashboard():
             body: JSON.stringify({api_key: key})
         });
         const data = await res.json();
-
         if(data.status === 'success') {
             const select = document.getElementById('model-select');
             select.innerHTML = '';
@@ -623,13 +614,9 @@ async def root_dashboard():
     async function saveConfig() {
         const key = document.getElementById('api-key').value;
         const model = document.getElementById('model-select').value;
-        
-        // Check if model is missing, OR if both the input is empty AND the default token isn't active
         if (!model || (!key && !usingDefaultToken)) { 
-            logMsg("Key/Model missing.", "err"); 
-            return; 
+            logMsg("Key/Model missing.", "err"); return; 
         }
-
         const res = await fetch('/config/llm', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -637,8 +624,7 @@ async def root_dashboard():
         });
         const data = await res.json();
         if(data.status === 'success') {
-            logMsg(data.message, "success");
-            updateState();
+            logMsg(data.message, "success"); updateState();
         } else {
             logMsg(data.message, "err");
         }
@@ -657,8 +643,7 @@ async def root_dashboard():
                 opt.value = m; opt.innerText = m;
                 select.appendChild(opt);
             });
-            logMsg("Zero-config active.", "success");
-            updateState();
+            logMsg("Zero-config active.", "success"); updateState();
         } else {
             logMsg(data.message, "err");
         }
@@ -695,7 +680,6 @@ async def root_dashboard():
                 body: JSON.stringify({action_type: actionType})
             });
             
-            // ADDED: Handle the 400 error cleanly if the API key is missing
             if (!actionRes.ok) {
                 const errData = await actionRes.json();
                 logMsg("LLM Error: " + (errData.detail || "Failed to generate decisions"), "err");
@@ -703,14 +687,12 @@ async def root_dashboard():
             }
             
             const actionData = await actionRes.json();
-            
             if(!actionData.decisions) {
                 logMsg("Decision matrix generation failed.", "err"); return;
             }
 
             logMsg(`Executing Step with ${actionData.decisions.length} decisions...`, "info");
 
-            // FIX: Wrap the payload in the 'action' key required by OpenEnv
             const res = await fetch('/step', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -726,9 +708,10 @@ async def root_dashboard():
             
             const data = await res.json();
 
-            const reward = data.reward ?? data.observation?.reward ?? 0.0;
-            const done = data.done ?? data.observation?.done ?? false;
-            const step = data.step_count ?? data.observation?.metadata?.step_count ?? 'N/A';
+            // FIX: Robust payload extraction handling regardless of OpenEnv wrapper depth
+            const reward = data.reward ?? data.observation?.reward ?? data.info?.reward ?? 0.0;
+            const done = data.done ?? data.observation?.done ?? data.info?.done ?? false;
+            const step = data.step_count ?? data.observation?.step_count ?? data.info?.step_count ?? data.observation?.metadata?.step_count ?? 'N/A';
 
             logMsg(`[RECON] Reward: ${reward.toFixed(4)} | Success`, reward >= 0.8 ? 'success' : 'warn');
 
@@ -749,8 +732,14 @@ async def root_dashboard():
         }
     }
 
-    setInterval(updateState, 1000);
-    updateState();
+    // FIX: Auto-Reset the environment on boot so it actually has data to process
+    window.addEventListener('DOMContentLoaded', async () => {
+        logMsg("Auto-initializing environment engine...", "info");
+        await executeReset();
+        setInterval(updateState, 1000);
+        updateState();
+    });
+
     </script>
     </body>
     </html>
@@ -758,7 +747,6 @@ async def root_dashboard():
     return HTMLResponse(content=html_content)
 
 def main():
-    # Hugging Face Spaces expects traffic on port 7860
     port = int(os.getenv("PORT", 7860))
     uvicorn.run(app, host="0.0.0.0", port=port)
 
