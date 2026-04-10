@@ -107,7 +107,7 @@ class FinAuditorEnvironment(Environment):
         return FinAuditorObservation(
             features=[],
             message="Fin Auditor engine ready.",
-            reward=0.0,
+            reward=0.001,  # Must be strictly > 0 for OpenEnv grader
             done=False
         )
 
@@ -120,7 +120,9 @@ class FinAuditorEnvironment(Environment):
             # Cast actions to uint8 array for nanobind
             action_array = np.array(action.decisions, dtype=np.uint8)
             # Just grab the raw score from the C++ engine!
-            step_reward = float(self.engine.compute_reward(action_array))
+            raw_reward = float(self.engine.compute_reward(action_array))
+            # OpenEnv grader requires reward strictly in (0, 1) — never 0.0 or 1.0
+            step_reward = max(0.001, min(0.999, raw_reward))
 
         # 2. GENERATE NEW DATA (Using procedural C++ engine)
         # Replaces the old CSV ingestion logic
