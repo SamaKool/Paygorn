@@ -19,14 +19,12 @@ import numpy as np
 # ── Native Engine Bridge ─────────────────────────────────────────────────────
 def _load_native_engine():
     """Surgically discovers and loads the compiled C++ binary (.so or .pyd)."""
-    # 1. Try standard import first
     try:
         import hft_auditor
         return hft_auditor
     except ImportError:
         pass
 
-    # 2. Search root directory (parent of 'server')
     _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
     _ROOT_DIR = os.path.abspath(os.path.join(_CURRENT_DIR, ".."))
     
@@ -78,7 +76,6 @@ class FinAuditorEnvironment(Environment):
     _RING_BUFFER_CAPACITY: int = 1_048_576
     _INGEST_CHUNK_SIZE: int = 40
     _DELTA_MAX_NS: int = 5_000_000_000
-    _MAX_EPISODE_STEPS: int = 10
 
     def __init__(self) -> None:
         self._state = State(episode_id=str(uuid4()), step_count=0)
@@ -88,48 +85,53 @@ class FinAuditorEnvironment(Environment):
         # 1. READ TASK_ID FROM ENVIRONMENT
         task_id = os.getenv("TASK_ID", "anomaly_detection_hard").lower()
         
-        # 2. MAP TO C++ DIFFICULTY ENUM
+        # 2. MAP TO C++ DIFFICULTY ENUM & SYNC YAML STEPS
         if "easy" in task_id:
             self.difficulty = hft_auditor.Difficulty.EASY
+            self._MAX_EPISODE_STEPS = 5
         elif "medium" in task_id:
             self.difficulty = hft_auditor.Difficulty.MEDIUM
+            self._MAX_EPISODE_STEPS = 10
         else:
             self.difficulty = hft_auditor.Difficulty.HARD
+            self._MAX_EPISODE_STEPS = 20
 
     def reset(self) -> AuditorObservation:
         self._state = State(episode_id=str(uuid4()), step_count=0)
         
-        # We intentionally return an empty matrix on reset to bypass the 
-        # _last_reasoning scoping bug in inference.py. 
+        # We intentionally return an empty matrix on reset.
         self.sim_time_ns += self._DELTA_MAX_NS
         self.engine.tick(self.sim_time_ns)
 
         return FinAuditorObservation(
             features=[],
             message="Fin Auditor engine ready.",
-            reward=0.001,  # Must be strictly > 0 for OpenEnv grader
+            reward=0.001 / self._MAX_EPISODE_STEPS,  # Safe fractional minimum
             done=False
         )
 
     def step(self, action: AuditorAction) -> AuditorObservation:  # type: ignore[override]
         self._state.step_count += 1
 
-        # 1. REWARD CALCULATION (Using C++ Engine)
+        # 1. REWARD CALCULATION & MATHEMATICAL NORMALIZATION
         step_reward = 0.0
         if action and action.decisions:
-            # Cast actions to uint8 array for nanobind
             action_array = np.array(action.decisions, dtype=np.uint8)
-            # Just grab the raw score from the C++ engine!
             raw_reward = float(self.engine.compute_reward(action_array))
-            # OpenEnv grader requires reward strictly in (0, 1) — never 0.0 or 1.0
-            step_reward = max(0.001, min(0.999, raw_reward))
+            
+            # Map raw reward bounds [-4.0, 40.0] to a [0, 1] percentage
+            normalized_raw = (raw_reward + 4.0) / 44.0
+            
+            # Clamp to prevent EXACT 0.0 or 1.0 boundary hits
+            safe_clamped = max(0.01, min(0.99, normalized_raw))
+            
+            # Distribute over episode length so the SUM is strictly in (0, 1)
+            step_reward = safe_clamped / self._MAX_EPISODE_STEPS
 
         # 2. GENERATE NEW DATA (Using procedural C++ engine)
-        # Replaces the old CSV ingestion logic
         self.engine.generate_batch(self.difficulty, self._INGEST_CHUNK_SIZE, self.sim_time_ns)
         
         # 3. ADVANCE TIME & EXPIRE
-        # Jump time forward by 6 seconds to guarantee the batch expires immediately
         self.sim_time_ns += 6_000_000_000
         self.engine.tick(self.sim_time_ns)
 
@@ -139,7 +141,7 @@ class FinAuditorEnvironment(Environment):
 
         done = self._state.step_count >= self._MAX_EPISODE_STEPS
 
-        # Expose C++ tracking metrics to the Python state so inference.py can log them
+        # Expose C++ tracking metrics to the Python state
         self._state.last_tp = self.engine.last_tp
         self._state.last_tn = self.engine.last_tn
         self._state.last_fp = self.engine.last_fp
@@ -148,7 +150,7 @@ class FinAuditorEnvironment(Environment):
         return FinAuditorObservation(
             features=anomalies,
             message=f"Processed batch. Found {total_anomalies} expired trades.",
-            reward=step_reward,  # <-- Use the raw step_reward here
+            reward=step_reward,  
             done=done
         )
 
