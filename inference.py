@@ -20,7 +20,6 @@ if _ROOT not in sys.path:
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
-# Check if Samarth renamed the file to hft_auditor_env.py as per his plan
 try:
     from hft_auditor_env import FinAuditorEnv as FinAuditorEnvironment
 except ImportError:
@@ -32,7 +31,6 @@ class LLMResponse(BaseModel):
     reasoning: str
     decisions: List[int]
 
-# ADDED DEFAULTS AND STRICT VALIDATION
 API_BASE_URL: str = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME:   str = os.getenv("MODEL_NAME", "meta-llama/Meta-Llama-3-8B-Instruct")
 HF_TOKEN:     str = os.getenv("HF_TOKEN")
@@ -40,8 +38,17 @@ HF_TOKEN:     str = os.getenv("HF_TOKEN")
 if not HF_TOKEN:
     raise ValueError("CRITICAL: HF_TOKEN environment variable is missing.")
 
-MAX_STEPS:    int = int(os.getenv("MAX_STEPS", "10"))
 TASK_ID:      str = os.getenv("TASK_ID", "anomaly_detection_hard")
+
+# FIX: Sync the inference max_steps default with the active task
+if "easy" in TASK_ID.lower():
+    _DEFAULT_MAX = 5
+elif "medium" in TASK_ID.lower():
+    _DEFAULT_MAX = 10
+else:
+    _DEFAULT_MAX = 20
+
+MAX_STEPS:    int = int(os.getenv("MAX_STEPS", str(_DEFAULT_MAX)))
 
 _client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
@@ -118,15 +125,11 @@ def _parse_llm_decisions(content: str, expected_count: int) -> list[int]:
         except Exception:
             pass
 
-    # HONEST FALLBACK: Returns 1 (Investigate) instead of blindly flagging
     return [1] * expected_count
 
 def _normalize_decisions(decisions: list[int], expected: int) -> list[int]:
-    # Map any positive number to 1 (FLAG), otherwise 0 (PASS)
     clamped = [1 if d >= 1 else 0 for d in decisions]
     clamped = clamped[:expected]
-    
-    # Pad with 1 (FLAG) if the LLM output too few answers
     while len(clamped) < expected:
         clamped.append(1) 
     return clamped
@@ -153,7 +156,6 @@ def _call_llm(step: int, features: list[list[float]]) -> list[int]:
         except Exception as e:
             time.sleep(1)
 
-    # HEURISTIC FALLBACK: If JSON parsing fails, use a logic-based guess.
     fallback_decisions = []
     for row in features:
         if len(row) >= 4:
@@ -174,7 +176,6 @@ def run_inference() -> None:
         obs = env.reset()
         episode_id = getattr(env.state, 'episode_id', "test_run")
 
-        # FIX: The grader expects the tag as the absolute first string on the line
         start_payload = {
             "episode_id": episode_id, 
             "model": MODEL_NAME, 
@@ -199,12 +200,12 @@ def run_inference() -> None:
             total_reward += step_reward
             steps_completed = step_num
 
-            # FIX: Prefix [STEP] string before the JSON payload
+            # FIX: Ensure fractional precision is retained for validation
             step_payload = {
                 "step": step_num,
                 "anomalies": len(features),
-                "reward": round(float(step_reward), 2),
-                "cumulative_reward": round(float(total_reward), 2),
+                "reward": round(float(step_reward), 4),
+                "cumulative_reward": round(float(total_reward), 4),
                 "done": bool(obs.done),
                 "error": None,
                 "reasoning": _last_reasoning[:120].replace('\n', ' ') + "...",
@@ -224,11 +225,10 @@ def run_inference() -> None:
         status = "ERROR"
         traceback.print_exc(file=sys.stderr)
 
-    # FIX: Prefix [END] string before the JSON payload
     avg_reward = total_reward / max(steps_completed, 1)
     end_payload = {
-        "total_reward": float(total_reward), 
-        "avg_reward": float(avg_reward),
+        "total_reward": round(float(total_reward), 4), 
+        "avg_reward": round(float(avg_reward), 4),
         "status": status
     }
     print(f"[END] {json.dumps(end_payload)}", flush=True)
