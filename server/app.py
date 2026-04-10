@@ -66,6 +66,35 @@ else:
 
 app_metrics = {"last_step_latency_us": 0.0}
 
+# ── Auto-bootstrap on startup ────────────────────────────────────────────────
+@app.on_event("startup")
+async def auto_bootstrap():
+    """Auto-authenticate with HF_TOKEN and initialize engine on boot."""
+    token = os.getenv("HF_TOKEN", "")
+    if token:
+        try:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(base_url="https://router.huggingface.co/v1", api_key=token, max_retries=2)
+            try:
+                response = await client.models.list()
+                model_list = [m.id for m in response.data]
+            except Exception:
+                model_list = ["meta-llama/Meta-Llama-3-8B-Instruct"]
+            
+            llm_session["api_key"] = token
+            llm_session["base_url"] = "https://router.huggingface.co/v1"
+            llm_session["available_models"] = model_list
+            if model_list:
+                llm_session["model_name"] = model_list[0]
+            system_health["key_validated"] = True
+            system_health["model_detected"] = len(model_list) > 0
+            system_health["connected"] = True
+            print(f"[BOOT] Auto-authenticated with HF_TOKEN. {len(model_list)} models discovered.")
+        except Exception as e:
+            print(f"[BOOT] Auto-auth failed: {e}")
+    else:
+        print("[BOOT] No HF_TOKEN found. Manual authentication required.")
+
 @app.middleware("http")
 async def capture_step_latency(request: Request, call_next):
     if request.url.path == "/step":
@@ -711,7 +740,14 @@ async def root_dashboard():
             // FIX: Robust payload extraction handling regardless of OpenEnv wrapper depth
             const reward = data.reward ?? data.observation?.reward ?? data.info?.reward ?? 0.0;
             const done = data.done ?? data.observation?.done ?? data.info?.done ?? false;
-            const step = data.step_count ?? data.observation?.step_count ?? data.info?.step_count ?? data.observation?.metadata?.step_count ?? 'N/A';
+
+            // Fetch the authoritative step count from /state
+            let step = 'N/A';
+            try {
+                const stateRes = await fetch('/state');
+                const stateData = await stateRes.json();
+                step = stateData.step_count ?? 'N/A';
+            } catch(se) {}  // Swallow — non-critical
 
             logMsg(`[RECON] Reward: ${reward.toFixed(4)} | Success`, reward >= 0.8 ? 'success' : 'warn');
 
@@ -732,10 +768,13 @@ async def root_dashboard():
         }
     }
 
-    // FIX: Auto-Reset the environment on boot so it actually has data to process
+    // Auto-Reset the environment on boot so it actually has data to process,
+    // then try to authenticate with the default HF_TOKEN
     window.addEventListener('DOMContentLoaded', async () => {
         logMsg("Auto-initializing environment engine...", "info");
         await executeReset();
+        logMsg("Attempting default token auth...", "info");
+        await useDefault();
         setInterval(updateState, 1000);
         updateState();
     });

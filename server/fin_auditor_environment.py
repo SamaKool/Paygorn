@@ -98,14 +98,24 @@ class FinAuditorEnvironment(Environment):
 
     def reset(self) -> AuditorObservation:
         self._state = State(episode_id=str(uuid4()), step_count=0)
-        
-        # We intentionally return an empty matrix on reset.
-        self.sim_time_ns += self._DELTA_MAX_NS
+
+        # Re-initialize the engine for a clean episode
+        self.engine = hft_auditor.ReconciliationEngine(self._RING_BUFFER_CAPACITY)
+        self.sim_time_ns = 0
+
+        # Generate the first batch so step 1 has data to evaluate
+        self.engine.generate_batch(self.difficulty, self._INGEST_CHUNK_SIZE, self.sim_time_ns)
+
+        # Advance time past Δ_max to expire the batch
+        self.sim_time_ns += 6_000_000_000
         self.engine.tick(self.sim_time_ns)
 
+        # Get the anomaly matrix for the agent (features for step 1)
+        anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
+
         return FinAuditorObservation(
-            features=[],
-            message="Fin Auditor engine ready.",
+            features=anomalies,
+            message=f"Engine ready. {len(anomalies)} trades awaiting audit.",
             reward=0.001 / self._MAX_EPISODE_STEPS,  # Safe fractional minimum
             done=False
         )

@@ -395,9 +395,9 @@ public:
       out[2] = missing_freq;
       out[3] = static_cast<float>(slot.counterparty_id % 100) / 100.0f;
 
-      // CRITICAL: Mark slot as EMPTY after reporting to Python so it
-      // doesn't reappear in the next processing step.
-      pool_.set_state(idx, SlotState::EMPTY);
+      // NOTE: Do NOT clear the slot here. The ground truth label must
+      // remain readable until compute_reward() processes the agent's
+      // decisions. Clearing happens inside compute_reward() instead.
       ++row;
     }
 
@@ -463,6 +463,15 @@ public:
 
       reward_details_[i] = r;
       total_reward += r;
+    }
+
+    // Now that rewards are computed, clear the expired slots so they
+    // don't reappear in the next get_anomaly_matrix() call.
+    for (size_t i = 0; i < num_actions; ++i) {
+      const uint32_t idx = expired_buffer_[i];
+      if (pool_.get_state(idx) == SlotState::EXPIRED) {
+        pool_.set_state(idx, SlotState::EMPTY);
+      }
     }
 
     return total_reward;
