@@ -168,7 +168,7 @@ async def execute_llm_step(api_key: str, base_url: str, model_name: str, batch_s
 # ==============================================================================
 # PHASE 3: API ENDPOINTS (The Data Pipeline)
 # ==============================================================================
-@app.get("/state")
+@app.get("/dashboard/state")
 async def get_state():
     # FIX: Check the dynamically tracked instance instead of the old static one
     if not active_env_instance:
@@ -560,7 +560,7 @@ async def root_dashboard():
 
     async function updateState() {
         try {
-            const res = await fetch('/state');
+            const res = await fetch('/dashboard/state');
             const data = await res.json();
 
             const h = data.health;
@@ -741,10 +741,10 @@ async def root_dashboard():
             const reward = data.reward ?? data.observation?.reward ?? data.info?.reward ?? 0.0;
             const done = data.done ?? data.observation?.done ?? data.info?.done ?? false;
 
-            // Fetch the authoritative step count from /state
+            // Fetch the authoritative step count from /dashboard/state
             let step = 'N/A';
             try {
-                const stateRes = await fetch('/state');
+                const stateRes = await fetch('/dashboard/state');
                 const stateData = await stateRes.json();
                 step = stateData.step_count ?? 'N/A';
             } catch(se) {}  // Swallow — non-critical

@@ -53,7 +53,7 @@ include(FetchContent)
 FetchContent_Declare(
   nanobind
   GIT_REPOSITORY https://github.com/wjakob/nanobind.git
-  GIT_TAG        master
+  GIT_TAG        v2.2.0
 )
 FetchContent_MakeAvailable(nanobind)
 
@@ -76,6 +76,7 @@ target_link_libraries(hft_auditor PRIVATE Threads::Threads)
 
 # ── Google Benchmark Integration ──────────────────────────────────────────
 #
+if(NOT DOCKER_SAFE_BUILD)
 # Prevents benchmark from pulling GTest as a transitive dependency
 set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 # Disables -Werror to prevent unhandled enum warnings in sysinfo.cc from breaking the build
@@ -99,6 +100,7 @@ target_include_directories(hft_benchmarks PRIVATE
     ${nanobind_SOURCE_DIR}/include
     ${Python_INCLUDE_DIRS}
 )
+endif()
 
 # Link against benchmark_main to avoid writing a main() function
 target_link_libraries(hft_benchmarks PRIVATE 
