@@ -96,57 +96,68 @@ class FinAuditorEnvironment(Environment):
 
     def reset(self) -> AuditorObservation:
         self._state = State(episode_id=str(uuid4()), step_count=0)
-        self.sim_time_ns += self._DELTA_MAX_NS
+        
+        # 1. Initialize Cumulative Counters for the Grader
+        self._state.total_tp = 0
+        self._state.total_tn = 0
+        self._state.total_fp = 0
+        self._state.total_fn = 0
+
+        self._state.last_tp = 0
+        self._state.last_tn = 0
+        self._state.last_fp = 0
+        self._state.last_fn = 0
+
+        # 2. Pre-generate the first batch so Step 1 actually has data!
+        self.engine.generate_batch(self.difficulty, self._INGEST_CHUNK_SIZE, self.sim_time_ns)
+        self.sim_time_ns += self._DELTA_MAX_NS + 1_000_000_000
         self.engine.tick(self.sim_time_ns)
+        
+        anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
 
         return FinAuditorObservation(
-            features=[],
-            message="Fin Auditor engine ready.",
-            reward=0.01,  # Safe minimum floor, not divided
+            features=anomalies,
+            message=f"Fin Auditor engine ready. {len(anomalies)} trades loaded.",
+            reward=0.0,
             done=False
         )
 
     def step(self, action: AuditorAction) -> AuditorObservation:  # type: ignore[override]
         self._state.step_count += 1
-        
-        # 1. BASE REWARD CALCULATION
+
+        # 1. EVALUATE AGENT DECISIONS
         if action and action.decisions:
             action_array = np.array(action.decisions, dtype=np.uint8)
-            raw_reward = float(self.engine.compute_reward(action_array))
-            
-            # Map raw engine bounds [-4.0, 40.0] -> [0.0, 1.0]
-            normalized_raw = (raw_reward + 4.0) / 44.0
-            
-            # 2. THE FIX: CLAMP AND DISTRIBUTE
-            # We clamp to 0.99 so even a "perfect" sum stays under 1.0
-            # Dividing by MAX_EPISODE_STEPS ensures the total sum is strictly in (0, 1)
-            clamped_val = max(0.01, min(0.99, normalized_raw))
-            step_reward = clamped_val / self._MAX_EPISODE_STEPS
-        else:
-            # Default for empty decisions: a tiny fraction of the floor
-            step_reward = 0.01 / self._MAX_EPISODE_STEPS
+            self.engine.compute_reward(action_array)
 
-        # 3. ENGINE PROGRESSION (Keep original logic)
+            # ACCUMULATE metrics across the ENTIRE episode for the Grader!
+            self._state.total_tp += self.engine.last_tp
+            self._state.total_tn += self.engine.last_tn
+            self._state.total_fp += self.engine.last_fp
+            self._state.total_fn += self.engine.last_fn
+
+            # Expose the single-batch metrics for your React dashboard
+            self._state.last_tp = self.engine.last_tp
+            self._state.last_tn = self.engine.last_tn
+            self._state.last_fp = self.engine.last_fp
+            self._state.last_fn = self.engine.last_fn
+
+        # 2. ENGINE PROGRESSION
         self.engine.generate_batch(self.difficulty, self._INGEST_CHUNK_SIZE, self.sim_time_ns)
-        self.sim_time_ns += 6_000_000_000
+        self.sim_time_ns += self._DELTA_MAX_NS + 1_000_000_000
         self.engine.tick(self.sim_time_ns)
 
+        # 3. EXTRACT NEXT MATRIX
         anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
-        total_anomalies = len(anomalies)
         done = self._state.step_count >= self._MAX_EPISODE_STEPS
-
-        # Update metrics for the dashboard
-        self._state.last_tp = self.engine.last_tp
-        self._state.last_tn = self.engine.last_tn
-        self._state.last_fp = self.engine.last_fp
-        self._state.last_fn = self.engine.last_fn
 
         return FinAuditorObservation(
             features=anomalies,
-            message=f"Processed batch. Found {total_anomalies} expired trades.",
-            reward=step_reward,  
+            message=f"Processed batch. Found {len(anomalies)} expired trades.",
+            reward=0.0, # Let FinAuditorGrader handle the final math
             done=done
         )
+
 
     @property
     def state(self) -> State:

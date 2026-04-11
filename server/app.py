@@ -28,7 +28,9 @@ if _CURRENT_DIR not in sys.path:
 try:
     from fin_auditor_environment import FinAuditorEnvironment, hft_auditor
     from models import AuditorAction, AuditorObservation
-    
+    from graders.grader_detection import FinAuditorGrader
+    from tasks import task1_easy, task2_medium, task3_hard
+
     HAS_ENV = True
     NATIVE_VERIFIED = hft_auditor is not None
     hft_mod = hft_auditor
@@ -45,23 +47,36 @@ except ImportError as e:
 # ==============================================================================
 
 if HAS_ENV and NATIVE_VERIFIED:
-    class TrackedFinAuditorEnvironment(FinAuditorEnvironment):
-        """Wrapper class to capture the environment instance created by OpenEnv"""
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            global active_env_instance
-            active_env_instance = self
-            
-    # OpenEnv creates the FastAPI app and instantiates TrackedFinAuditorEnvironment internally
+    # 1. Create a single tracked instance so your custom dashboard can read live metrics
+    global active_env_instance
     active_env_instance = FinAuditorEnvironment()
-    app = create_app(lambda: active_env_instance, AuditorAction, AuditorObservation)
+
+    # 2. Register environment, action/obs models, and pass the RAW TASK MODULES
+    try:
+        app = create_app(
+            lambda: active_env_instance,  # This preserves your custom UI dashboard!
+            AuditorAction,
+            AuditorObservation,
+            tasks=[
+                task1_easy,
+                task2_medium,
+                task3_hard
+            ]
+        )
+    except TypeError as e:
+        print(f"[CRITICAL] OpenEnv framework version mismatch: {e}")
+        # Fallback if the local OpenEnv version doesn't support tasks kwargs
+        app = create_app(lambda: active_env_instance, AuditorAction, AuditorObservation)
+
 else:
+    # Fallback for local development without the C++ binary
     app = FastAPI(title="PayGorn (MOCK MODE)")
     @app.post("/reset")
     async def mock_reset(): return {"reward": 0.0}
     @app.post("/step")
     async def mock_step(action: dict): return {"reward": 0.5, "done": False, "step_count": 0}
 
+# Initialize metrics for the dashboard latency middleware
 app_metrics = {"last_step_latency_us": 0.0}
 
 # ── Auto-bootstrap on startup ────────────────────────────────────────────────
