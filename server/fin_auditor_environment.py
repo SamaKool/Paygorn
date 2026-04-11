@@ -151,10 +151,27 @@ class FinAuditorEnvironment(Environment):
         anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
         done = self._state.step_count >= self._MAX_EPISODE_STEPS
 
+        # 4. COMPUTE LIVE STEP REWARD from cumulative episode performance
+        #    Uses same asymmetric weights as FinAuditorGrader so the dashboard
+        #    value is consistent with the official final episode score.
+        tp = float(self._state.total_tp)
+        tn = float(self._state.total_tn)
+        fp = float(self._state.total_fp)
+        fn = float(self._state.total_fn)
+        total = tp + tn + fp + fn
+
+        if total > 0:
+            positive = tp * 1.0 + tn * 0.1
+            negative = fp * 0.1 + fn * 0.4
+            raw = max(0.0, positive - negative) / (total * 1.0)
+            step_reward = max(0.01, min(0.99, raw))
+        else:
+            step_reward = 0.01  # floor before any decisions are made
+
         return FinAuditorObservation(
             features=anomalies,
             message=f"Processed batch. Found {len(anomalies)} expired trades.",
-            reward=0.0, # Let FinAuditorGrader handle the final math
+            reward=step_reward,
             done=done
         )
 

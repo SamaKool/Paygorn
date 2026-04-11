@@ -119,18 +119,21 @@ class FinAuditorGrader:
     def grade(self, state: Any, ground_truth: dict[str, Any] | None = None) -> float:
         """Compute the final episode score.
 
+        Reads cumulative ``total_*`` counters (full episode) when available,
+        falling back to ``last_*`` (single-batch snapshot) for compatibility.
+
         Args:
             state:        Environment state object at episode end.
-                          Must expose last_tp, last_tn, last_fp, last_fn.
-            ground_truth: Unused — ground truth is implicit in the C++ engine.
+            ground_truth: Unused — truth is implicit in the C++ engine.
 
         Returns:
             float strictly in (0.01, 0.99).
         """
-        tp = float(getattr(state, "last_tp", 0))
-        tn = float(getattr(state, "last_tn", 0))
-        fp = float(getattr(state, "last_fp", 0))
-        fn = float(getattr(state, "last_fn", 0))
+        # Prefer full-episode accumulators; fall back to last-batch snapshot
+        tp = float(getattr(state, "total_tp", None) or getattr(state, "last_tp", 0))
+        tn = float(getattr(state, "total_tn", None) or getattr(state, "last_tn", 0))
+        fp = float(getattr(state, "total_fp", None) or getattr(state, "last_fp", 0))
+        fn = float(getattr(state, "total_fn", None) or getattr(state, "last_fn", 0))
 
         total = tp + tn + fp + fn
         if total == 0:
@@ -140,11 +143,9 @@ class FinAuditorGrader:
         positive_signal = (tp * _TP_WEIGHT) + (tn * _TN_WEIGHT)
         negative_signal = (fp * _FP_PENALTY) + (fn * _FN_PENALTY)
 
-        # Normalise against the theoretical maximum (all trades are TP)
         max_signal = total * _TP_WEIGHT
         raw_score = max(0.0, positive_signal - negative_signal) / max_signal
 
-        # Strict hackathon boundary — must not be exactly 0.0 or 1.0
         score = max(0.01, min(0.99, raw_score))
 
         self._record(
