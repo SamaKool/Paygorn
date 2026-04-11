@@ -108,30 +108,34 @@ class FinAuditorEnvironment(Environment):
 
     def step(self, action: AuditorAction) -> AuditorObservation:  # type: ignore[override]
         self._state.step_count += 1
-
-        # FIX: OpenEnv grader:reward evaluates EACH step's reward independently.
-        # Must be strictly in (0.01, 0.99) for every step, no exceptions.
+        
+        # 1. BASE REWARD CALCULATION
         if action and action.decisions:
             action_array = np.array(action.decisions, dtype=np.uint8)
             raw_reward = float(self.engine.compute_reward(action_array))
-            # Map raw bounds [-4.0, 40.0] -> [0.0, 1.0]
+            
+            # Map raw engine bounds [-4.0, 40.0] -> [0.0, 1.0]
             normalized_raw = (raw_reward + 4.0) / 44.0
-            # Clamp strictly inside (0.01, 0.999)
-            step_reward = max(0.01, min(0.99, normalized_raw))
+            
+            # 2. THE FIX: CLAMP AND DISTRIBUTE
+            # We clamp to 0.99 so even a "perfect" sum stays under 1.0
+            # Dividing by MAX_EPISODE_STEPS ensures the total sum is strictly in (0, 1)
+            clamped_val = max(0.01, min(0.99, normalized_raw))
+            step_reward = clamped_val / self._MAX_EPISODE_STEPS
         else:
-            # Empty decisions (no-op step) - return safe floor, NOT 0.0
-            step_reward = 0.01
+            # Default for empty decisions: a tiny fraction of the floor
+            step_reward = 0.01 / self._MAX_EPISODE_STEPS
 
+        # 3. ENGINE PROGRESSION (Keep original logic)
         self.engine.generate_batch(self.difficulty, self._INGEST_CHUNK_SIZE, self.sim_time_ns)
-        
         self.sim_time_ns += 6_000_000_000
         self.engine.tick(self.sim_time_ns)
 
         anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
         total_anomalies = len(anomalies)
-
         done = self._state.step_count >= self._MAX_EPISODE_STEPS
 
+        # Update metrics for the dashboard
         self._state.last_tp = self.engine.last_tp
         self._state.last_tn = self.engine.last_tn
         self._state.last_fp = self.engine.last_fp
