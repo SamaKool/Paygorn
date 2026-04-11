@@ -196,7 +196,7 @@ def run_inference() -> None:
 
             obs = env.step(action)
             # Apply safe floor fallback in inference just in case
-            step_reward = obs.reward if obs.reward is not None else 0.001 
+            step_reward = obs.reward if obs.reward is not None else 0.01 
             total_reward += step_reward
             steps_completed = step_num
 
