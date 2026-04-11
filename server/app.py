@@ -44,9 +44,6 @@ except ImportError as e:
 # PHASE 2: SYSTEM STATE & AUTHORITY TRACKING
 # ==============================================================================
 
-# FIX: Global pointer to capture the OpenEnv-managed instance
-active_env_instance = None
-
 if HAS_ENV and NATIVE_VERIFIED:
     class TrackedFinAuditorEnvironment(FinAuditorEnvironment):
         """Wrapper class to capture the environment instance created by OpenEnv"""
@@ -56,7 +53,8 @@ if HAS_ENV and NATIVE_VERIFIED:
             active_env_instance = self
             
     # OpenEnv creates the FastAPI app and instantiates TrackedFinAuditorEnvironment internally
-    app = create_app(TrackedFinAuditorEnvironment, AuditorAction, AuditorObservation)
+    active_env_instance = FinAuditorEnvironment()
+    app = create_app(lambda: active_env_instance, AuditorAction, AuditorObservation)
 else:
     app = FastAPI(title="PayGorn (MOCK MODE)")
     @app.post("/reset")
