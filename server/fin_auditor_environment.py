@@ -82,16 +82,7 @@ class FinAuditorEnvironment(Environment):
         self.engine = hft_auditor.ReconciliationEngine(self._RING_BUFFER_CAPACITY)
         self.sim_time_ns = 0
         
-        # We default to HARD, but the actual routing happens in reset()
-        self.difficulty = hft_auditor.Difficulty.HARD
-        self._MAX_EPISODE_STEPS = 20
-
-    # FIX 1: Add *args, **kwargs to prevent TypeError when OpenEnv injects task_id
-    def reset(self, *args, **kwargs) -> AuditorObservation:
-        self._state = State(episode_id=str(uuid4()), step_count=0)
-        
-        # FIX 2: Dynamically shift difficulty based on OpenEnv's requested task
-        task_id = kwargs.get("task_id", os.getenv("TASK_ID", "anomaly_detection_hard")).lower()
+        task_id = os.getenv("TASK_ID", "anomaly_detection_hard").lower()
         
         if "easy" in task_id:
             self.difficulty = hft_auditor.Difficulty.EASY
@@ -102,6 +93,9 @@ class FinAuditorEnvironment(Environment):
         else:
             self.difficulty = hft_auditor.Difficulty.HARD
             self._MAX_EPISODE_STEPS = 20
+
+    def reset(self) -> AuditorObservation:
+        self._state = State(episode_id=str(uuid4()), step_count=0)
         
         # 1. Initialize Cumulative Counters for the Grader
         self._state.total_tp = 0
@@ -124,7 +118,7 @@ class FinAuditorEnvironment(Environment):
         return FinAuditorObservation(
             features=anomalies,
             message=f"Fin Auditor engine ready. {len(anomalies)} trades loaded.",
-            reward=0.01,
+            reward=0.0,
             done=False
         )
 
@@ -133,12 +127,7 @@ class FinAuditorEnvironment(Environment):
 
         # 1. EVALUATE AGENT DECISIONS
         if action and action.decisions:
-            # Protect C++ engine from generic OpenEnv agents (like Nemotron)
-            safe_decisions = action.decisions[:self._INGEST_CHUNK_SIZE]
-            while len(safe_decisions) < self._INGEST_CHUNK_SIZE:
-                safe_decisions.append(1)
-                
-            action_array = np.array(safe_decisions, dtype=np.uint8)
+            action_array = np.array(action.decisions, dtype=np.uint8)
             self.engine.compute_reward(action_array)
 
             # ACCUMULATE metrics across the ENTIRE episode for the Grader!
@@ -162,7 +151,9 @@ class FinAuditorEnvironment(Environment):
         anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
         done = self._state.step_count >= self._MAX_EPISODE_STEPS
 
-        # 4. COMPUTE LIVE STEP REWARD
+        # 4. COMPUTE LIVE STEP REWARD from cumulative episode performance
+        #    Uses same asymmetric weights as FinAuditorGrader so the dashboard
+        #    value is consistent with the official final episode score.
         tp = float(self._state.total_tp)
         tn = float(self._state.total_tn)
         fp = float(self._state.total_fp)
@@ -183,6 +174,7 @@ class FinAuditorEnvironment(Environment):
             reward=step_reward,
             done=done
         )
+
 
     @property
     def state(self) -> State:
