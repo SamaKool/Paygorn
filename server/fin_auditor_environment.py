@@ -102,7 +102,7 @@ class FinAuditorEnvironment(Environment):
         return FinAuditorObservation(
             features=[],
             message="Fin Auditor engine ready.",
-            reward=0.001,  # Safe minimum floor, not divided
+            reward=0.01,  # Safe minimum floor, not divided
             done=False
         )
 
@@ -110,17 +110,17 @@ class FinAuditorEnvironment(Environment):
         self._state.step_count += 1
 
         # FIX: OpenEnv grader:reward evaluates EACH step's reward independently.
-        # Must be strictly in (0.001, 0.999) for every step, no exceptions.
+        # Must be strictly in (0.01, 0.99) for every step, no exceptions.
         if action and action.decisions:
             action_array = np.array(action.decisions, dtype=np.uint8)
             raw_reward = float(self.engine.compute_reward(action_array))
             # Map raw bounds [-4.0, 40.0] -> [0.0, 1.0]
             normalized_raw = (raw_reward + 4.0) / 44.0
-            # Clamp strictly inside (0.001, 0.999)
-            step_reward = max(0.001, min(0.999, normalized_raw))
+            # Clamp strictly inside (0.01, 0.999)
+            step_reward = max(0.01, min(0.99, normalized_raw))
         else:
             # Empty decisions (no-op step) - return safe floor, NOT 0.0
-            step_reward = 0.001
+            step_reward = 0.01
 
         self.engine.generate_batch(self.difficulty, self._INGEST_CHUNK_SIZE, self.sim_time_ns)
         
