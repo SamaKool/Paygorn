@@ -1,0 +1,15 @@
+gymnasium>=1.2.3
+openenv-core[core]>=0.2.2
+numpy
+nanobind
+openai
+pydantic
+fastapi
+uvicorn
+pandas>=2.3.3
+python-dotenv>=1.2.2
+stable-baselines3[extra]>=2.8.0
+
+[dev]
+pytest>=8.0.0
+pytest-cov>=4.0.0
