@@ -100,13 +100,13 @@ target_include_directories(hft_benchmarks PRIVATE
     ${nanobind_SOURCE_DIR}/include
     ${Python_INCLUDE_DIRS}
 )
-endif()
 
 # Link against benchmark_main to avoid writing a main() function
 target_link_libraries(hft_benchmarks PRIVATE 
-    benchmark::benchmark 
-    benchmark::benchmark_main 
-    Threads::Threads
-    Python::Python
-    nanobind-static
+benchmark::benchmark 
+benchmark::benchmark_main 
+Threads::Threads
+Python::Python
+nanobind-static
 )
+endif()
