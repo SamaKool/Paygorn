@@ -82,10 +82,8 @@ class FinAuditorEnvironment(Environment):
         self.engine = hft_auditor.ReconciliationEngine(self._RING_BUFFER_CAPACITY)
         self.sim_time_ns = 0
         
-        # 1. READ TASK_ID FROM ENVIRONMENT
         task_id = os.getenv("TASK_ID", "anomaly_detection_hard").lower()
         
-        # 2. MAP TO C++ DIFFICULTY ENUM & SYNC YAML STEPS
         if "easy" in task_id:
             self.difficulty = hft_auditor.Difficulty.EASY
             self._MAX_EPISODE_STEPS = 5
@@ -98,60 +96,42 @@ class FinAuditorEnvironment(Environment):
 
     def reset(self) -> AuditorObservation:
         self._state = State(episode_id=str(uuid4()), step_count=0)
-
-        # Re-initialize the engine for a clean episode
-        self.engine = hft_auditor.ReconciliationEngine(self._RING_BUFFER_CAPACITY)
-        self.sim_time_ns = 0
-
-        # Generate the first batch so step 1 has data to evaluate
-        self.engine.generate_batch(self.difficulty, self._INGEST_CHUNK_SIZE, self.sim_time_ns)
-
-        # Advance time past Δ_max to expire the batch
-        self.sim_time_ns += 6_000_000_000
+        self.sim_time_ns += self._DELTA_MAX_NS
         self.engine.tick(self.sim_time_ns)
 
-        # Get the anomaly matrix for the agent (features for step 1)
-        anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
-
         return FinAuditorObservation(
-            features=anomalies,
-            message=f"Engine ready. {len(anomalies)} trades awaiting audit.",
-            reward=0.001 / self._MAX_EPISODE_STEPS,  # Safe fractional minimum
+            features=[],
+            message="Fin Auditor engine ready.",
+            reward=0.001,  # Safe minimum floor, not divided
             done=False
         )
 
     def step(self, action: AuditorAction) -> AuditorObservation:  # type: ignore[override]
         self._state.step_count += 1
 
-        # 1. REWARD CALCULATION & MATHEMATICAL NORMALIZATION
-        step_reward = 0.0
+        # FIX: OpenEnv grader:reward evaluates EACH step's reward independently.
+        # Must be strictly in (0.001, 0.999) for every step, no exceptions.
         if action and action.decisions:
             action_array = np.array(action.decisions, dtype=np.uint8)
             raw_reward = float(self.engine.compute_reward(action_array))
-            
-            # Map raw reward bounds [-4.0, 40.0] to a [0, 1] percentage
+            # Map raw bounds [-4.0, 40.0] -> [0.0, 1.0]
             normalized_raw = (raw_reward + 4.0) / 44.0
-            
-            # Clamp to prevent EXACT 0.0 or 1.0 boundary hits
-            safe_clamped = max(0.01, min(0.99, normalized_raw))
-            
-            # Distribute over episode length so the SUM is strictly in (0, 1)
-            step_reward = safe_clamped / self._MAX_EPISODE_STEPS
+            # Clamp strictly inside (0.001, 0.999)
+            step_reward = max(0.001, min(0.999, normalized_raw))
+        else:
+            # Empty decisions (no-op step) - return safe floor, NOT 0.0
+            step_reward = 0.001
 
-        # 2. GENERATE NEW DATA (Using procedural C++ engine)
         self.engine.generate_batch(self.difficulty, self._INGEST_CHUNK_SIZE, self.sim_time_ns)
         
-        # 3. ADVANCE TIME & EXPIRE
         self.sim_time_ns += 6_000_000_000
         self.engine.tick(self.sim_time_ns)
 
-        # 4. EXTRACT NEW MATRIX
         anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
         total_anomalies = len(anomalies)
 
         done = self._state.step_count >= self._MAX_EPISODE_STEPS
 
-        # Expose C++ tracking metrics to the Python state
         self._state.last_tp = self.engine.last_tp
         self._state.last_tn = self.engine.last_tn
         self._state.last_fp = self.engine.last_fp
