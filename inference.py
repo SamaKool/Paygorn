@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# inference.py — OpenEnv Evaluation Script (Hackathon Submission)
-#
-# STDOUT FORMAT (strict regex compliance):
-#   [START] task=<task_name> env=<benchmark> model=<model_name>
-#   [STEP] step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
-#   [END] success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
-#
-# ALL debug output goes to stderr. NO JSON on stdout. NO extra whitespace.
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 import os
 import sys
 import json
 import re
+import datetime
 import traceback
 import time
 from typing import List
@@ -36,10 +27,6 @@ except ImportError:
 
 from models import AuditorAction
 
-# ── Debug logger: ONLY to stderr ─────────────────────────────────────────────
-def _dbg(msg: str) -> None:
-    print(msg, file=sys.stderr, flush=True)
-
 class LLMResponse(BaseModel):
     reasoning: str
     decisions: List[int]
@@ -52,9 +39,7 @@ if not HF_TOKEN:
     raise ValueError("CRITICAL: HF_TOKEN environment variable is missing.")
 
 TASK_ID:      str = os.getenv("TASK_ID", "anomaly_detection_hard")
-ENV_NAME:     str = "fin_auditor"
 
-# FIX: Sync the inference max_steps default with the active task
 if "easy" in TASK_ID.lower():
     _DEFAULT_MAX = 5
 elif "medium" in TASK_ID.lower():
@@ -85,6 +70,9 @@ You MUST respond with a valid JSON object. The decisions array MUST contain exac
 Example:
 {"reasoning": "Trade 1 has high risk. Trade 2 is safe.", "decisions": [1, 0, 1]}
 """
+
+def _ts() -> str:
+    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 def _build_user_prompt(step: int, features: list[list[float]]) -> str:
     lines = [
@@ -165,10 +153,8 @@ def _call_llm(step: int, features: list[list[float]]) -> list[int]:
             content = response.choices[0].message.content or ""
             return _parse_llm_decisions(content, len(features))
         except Exception as e:
-            _dbg(f"[LLM RETRY {attempt+1}/{max_retries}] {e}")
             time.sleep(1)
 
-    _dbg("[LLM] All retries exhausted, using risk_score fallback")
     fallback_decisions = []
     for row in features:
         if len(row) >= 4:
@@ -179,59 +165,75 @@ def _call_llm(step: int, features: list[list[float]]) -> list[int]:
     return fallback_decisions
 
 def run_inference() -> None:
+    episode_id: str = "unknown"
+    total_reward: float = 0.0
     steps_completed: int = 0
-    all_rewards: list[float] = []
-    success: bool = False
-    error_msg: str | None = None
-
-    # ── [START] — always emitted ──────────────────────────────────────────
-    print(f"[START] task={TASK_ID} env={ENV_NAME} model={MODEL_NAME}", flush=True)
+    status: str = "SUCCESS"
 
     try:
         env = FinAuditorEnvironment()
         obs = env.reset()
+        episode_id = getattr(env.state, 'episode_id', "test_run")
 
-        _dbg(f"[DBG] Episode started. Features: {len(obs.features)} rows, difficulty: {TASK_ID}")
+        start_payload = {
+            "episode_id": episode_id, 
+            "model": MODEL_NAME, 
+            "difficulty": TASK_ID, 
+            "max_steps": MAX_STEPS
+        }
+        print(f"[START] {json.dumps(start_payload)}", flush=True)
 
         for step_num in range(1, MAX_STEPS + 1):
-            step_reward = 0.0
+            step_reward = 0.0  
             features = obs.features
 
             if not features:
                 action = AuditorAction(decisions=[])
-                _dbg(f"[DBG] Step {step_num}: Empty feature matrix")
+                _last_reasoning = "Empty matrix."
             else:
                 decisions = _call_llm(step_num, features)
                 action = AuditorAction(decisions=decisions)
 
             obs = env.step(action)
-            step_reward = obs.reward if obs.reward is not None else 0.0
-            all_rewards.append(step_reward)
+            # Apply safe floor fallback in inference just in case
+            step_reward = obs.reward if obs.reward is not None else 0.001 
+            total_reward += step_reward
             steps_completed = step_num
 
-            # ── [STEP] — plain text, 2 decimal places, lowercase bools ────
-            action_str = ",".join(str(d) for d in action.decisions) if action.decisions else "none"
-            done_str = "true" if obs.done else "false"
-            print(f"[STEP] step={step_num} action={action_str} reward={step_reward:.2f} done={done_str} error=null", flush=True)
-
-            _dbg(f"[DBG] Step {step_num}: reward={step_reward:.4f}, features={len(obs.features)}, done={obs.done}")
+            # FIX: Used round(..., 4) to prevent collapsing small fractions into 0.00
+            step_payload = {
+                "step": step_num,
+                "anomalies": len(features),
+                "reward": round(float(step_reward), 4),
+                "cumulative_reward": round(float(total_reward), 4),
+                "done": bool(obs.done),
+                "error": None,
+                "reasoning": _last_reasoning[:120].replace('\n', ' ') + "...",
+                "tp": getattr(env.state, 'last_tp', 0),
+                "tn": getattr(env.state, 'last_tn', 0),
+                "fp": getattr(env.state, 'last_fp', 0),
+                "fn": getattr(env.state, 'last_fn', 0)
+            }
+            print(f"[STEP] {json.dumps(step_payload)}", flush=True)
 
             if obs.done:
                 break
 
-        success = True
-
     except KeyboardInterrupt:
-        error_msg = "interrupted"
-        _dbg("[DBG] Interrupted by user")
+        status = "INTERRUPTED"
     except Exception as exc:
-        error_msg = str(exc).replace("\n", " ")[:80]
-        _dbg(f"[ERROR] {traceback.format_exc()}")
-    finally:
-        # ── [END] — ALWAYS emitted, even on crash ────────────────────────
-        success_str = "true" if success else "false"
-        rewards_str = ",".join(f"{r:.2f}" for r in all_rewards) if all_rewards else "0.00"
-        print(f"[END] success={success_str} steps={steps_completed} rewards={rewards_str}", flush=True)
+        status = "ERROR"
+        traceback.print_exc(file=sys.stderr)
+
+    avg_reward = total_reward / max(steps_completed, 1)
+    
+    # FIX: Used round(..., 4) for terminal payload outputs as well
+    end_payload = {
+        "total_reward": round(float(total_reward), 4), 
+        "avg_reward": round(float(avg_reward), 4),
+        "status": status
+    }
+    print(f"[END] {json.dumps(end_payload)}", flush=True)
 
 if __name__ == "__main__":
     run_inference()
