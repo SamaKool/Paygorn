@@ -81,10 +81,23 @@ class FinAuditorEnvironment(Environment):
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self.engine = hft_auditor.ReconciliationEngine(self._RING_BUFFER_CAPACITY)
         self.sim_time_ns = 0
-        
+
         # We default to HARD, but the actual routing happens in reset()
         self.difficulty = hft_auditor.Difficulty.HARD
         self._MAX_EPISODE_STEPS = 20
+
+        # Initialize confusion-matrix counters here so they always exist on
+        # the State object — even when step() is called on a fresh env that
+        # has not yet had reset() called (OpenEnv HTTP stateless mode creates
+        # a new env per request, so step_handler calls step() directly).
+        self._state.total_tp = 0
+        self._state.total_tn = 0
+        self._state.total_fp = 0
+        self._state.total_fn = 0
+        self._state.last_tp = 0
+        self._state.last_tn = 0
+        self._state.last_fp = 0
+        self._state.last_fn = 0
 
     # FIX 1: Add *args, **kwargs to prevent TypeError when OpenEnv injects task_id
     def reset(self, *args, **kwargs) -> AuditorObservation:
