@@ -184,6 +184,15 @@ class FinAuditorEnvironment(Environment):
             done=done
         )
 
+    def close(self) -> None:
+        """No-op: called by OpenEnv HTTP server after every request.
+
+        With the factory pattern each request gets a *fresh* instance, so
+        there is nothing to explicitly clean up here — the C++ engine is
+        reference-counted and will be released when the Python object is GC'd.
+        """
+        pass
+
     @property
     def state(self) -> State:
         return self._state

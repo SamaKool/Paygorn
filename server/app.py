@@ -47,26 +47,27 @@ except ImportError as e:
 # ==============================================================================
 
 if HAS_ENV and NATIVE_VERIFIED:
-    # 1. Create a single tracked instance so your custom dashboard can read live metrics
+    # ── Dashboard singleton (read-only telemetry, never handed to OpenEnv) ──────
     global active_env_instance
     active_env_instance = FinAuditorEnvironment()
 
-    # 2. Register environment, action/obs models, and pass the RAW TASK MODULES
-    try:
-        app = create_app(
-            lambda: active_env_instance,  # This preserves your custom UI dashboard!
-            AuditorAction,
-            AuditorObservation,
-            tasks=[
-                task1_easy,
-                task2_medium,
-                task3_hard
-            ]
-        )
-    except TypeError as e:
-        print(f"[CRITICAL] OpenEnv framework version mismatch: {e}")
-        # Fallback if the local OpenEnv version doesn't support tasks kwargs
-        app = create_app(lambda: active_env_instance, AuditorAction, AuditorObservation)
+    # ── OpenEnv factory ────────────────────────────────────────────────────────
+    # CRITICAL: OpenEnv's HTTP server calls env_factory() on EVERY /reset and
+    # /step request, then calls _env.close() when done.  Passing the singleton
+    # here would destroy its C++ engine on the first request.  We always return
+    # a *fresh* instance from the factory so close() is harmless.
+    def env_factory() -> FinAuditorEnvironment:
+        """Create a fresh FinAuditorEnvironment per OpenEnv request."""
+        return FinAuditorEnvironment()
+
+    # NOTE: create_app() has no `tasks=` parameter in openenv-core >= 0.2.x.
+    # Task routing (easy/medium/hard difficulty) is handled inside reset() via
+    # the task_id kwarg that Phase 2 injects into the /reset body.
+    app = create_app(
+        env_factory,
+        AuditorAction,
+        AuditorObservation,
+    )
 
 else:
     # Fallback for local development without the C++ binary
