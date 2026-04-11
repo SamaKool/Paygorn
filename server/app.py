@@ -189,10 +189,10 @@ async def get_state():
         "latency_us": round(latency_us, 3),
         "latency_source": "grounded_app_middleware", 
         "throughput_m": round((40 * 1e6) / (latency_us * 1000), 2) if latency_us > 0 else 0.0,
-        "active_count": active_env_instance.engine.active_count,
-        "total_ingested": active_env_instance.engine.total_ingested,
-        "ring_buffer_size": active_env_instance.engine.ring_buffer_size,
-        "buffer_saturation": (active_env_instance.engine.ring_buffer_size / active_env_instance.engine.pool_capacity) * 100,
+        "active_count": active_env_instance.engine.active_count(),
+        "total_ingested": active_env_instance.engine.total_ingested(),
+        "ring_buffer_size": active_env_instance.engine.ring_buffer_size(),
+        "buffer_saturation": (active_env_instance.engine.ring_buffer_size() / active_env_instance.engine.pool_capacity()) * 100,
         "step_count": active_env_instance.state.step_count,
         "metrics": {"tp": tp, "tn": tn, "fp": fp, "fn": fn},
         "difficulty": getattr(active_env_instance, 'difficulty', "EASY")
@@ -295,10 +295,10 @@ async def websocket_telemetry(websocket: WebSocket):
         while True:
             if active_env_instance and NATIVE_VERIFIED:
                 data = {
-                    "active_count": active_env_instance.engine.active_count,
-                    "total_ingested": active_env_instance.engine.total_ingested,
-                    "ring_buffer_size": active_env_instance.engine.ring_buffer_size,
-                    "pool_capacity": active_env_instance.engine.pool_capacity,
+                    "active_count": active_env_instance.engine.active_count(),
+                    "total_ingested": active_env_instance.engine.total_ingested(),
+                    "ring_buffer_size": active_env_instance.engine.ring_buffer_size(),
+                    "pool_capacity": active_env_instance.engine.pool_capacity(),
                     "latency_us": round(app_metrics["last_step_latency_us"], 3),
                     "status": "NATIVE_ACTIVE"
                 }
@@ -725,7 +725,7 @@ async def root_dashboard():
             const res = await fetch('/step', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ action: actionData }) 
+                body: JSON.stringify(actionData) 
             });
             
             if (!res.ok) {
