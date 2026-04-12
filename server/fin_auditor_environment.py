@@ -137,7 +137,7 @@ class FinAuditorEnvironment(Environment):
         return FinAuditorObservation(
             features=anomalies,
             message=f"Fin Auditor engine ready. {len(anomalies)} trades loaded.",
-            reward=0.1,
+            reward=0.01,   # floor: strictly > 0.0 (boundary requirement)
             done=False
         )
 
@@ -182,13 +182,12 @@ class FinAuditorEnvironment(Environment):
 
         if perfect_signal > 0:
             positive = (tp * 1.0) + (tn * 0.1)
-            negative = (fp * 0.1) + (fn * 0.4) 
+            negative = (fp * 0.1) + (fn * 0.4)
             raw = max(0.0, positive - negative) / perfect_signal
-            # REDDIT FIX: Changed 0.01 to 0.1
-            step_reward = max(0.1, min(0.99, raw))
+            # Clamp strictly inside (0.0, 1.0) — evaluator rejects exact boundaries.
+            step_reward = max(0.01, min(0.99, raw))
         else:
-            # REDDIT FIX: Changed 0.01 to 0.1
-            step_reward = 0.1  
+            step_reward = 0.01   # floor: strictly > 0.0 (boundary requirement)
 
         return FinAuditorObservation(
             features=anomalies,

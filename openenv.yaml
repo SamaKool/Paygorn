@@ -11,16 +11,18 @@ tasks:
       EASY — Detect expired/unreconciled trades. After a reset, trades
       are ingested and immediately aged past the 5-second max window.
       The agent must flag anomalous trades (decision=1) in the batch.
-    grader: graders.grader_detection.EasyDetectionGrader
+    grader: EasyDetectionGrader
     max_steps: 5
+    reward_threshold: 0.5
 
   - id: anomaly_detection_medium
     description: >
       MEDIUM — Identify high-risk counterparties. The agent must process
       the anomaly matrix and flag all trades where risk_score > 0.5.
       Stricter false-positive and false-negative penalties than EASY.
-    grader: graders.grader_classification.MediumClassificationGrader
+    grader: MediumClassificationGrader
     max_steps: 10
+    reward_threshold: 0.6
 
   - id: anomaly_detection_hard
     description: >
@@ -28,5 +30,6 @@ tasks:
       missing_frequency > 0.3, indicating a systemic anomaly wave,
       and correctly flag ALL trades in the batch. Heavy penalties for
       false positives and catastrophic penalties for missed anomalies.
-    grader: graders.grader_fix.HardFixGrader
-    max_steps: 20
+    grader: HardFixGrader
+    max_steps: 20
+    reward_threshold: 0.7
