@@ -59,10 +59,3 @@ class EasyDetectionGrader:
             "score": round(score, 4),
         }
         return score
-
-
-# Add this wrapper function to the bottom of grader_detection.py
-def grade_task1_easy(state: Any = None, ground_truth: dict[str, Any] | None = None) -> float:
-    """Instantiates the EasyDetectionGrader and executes the validation."""
-    grader = EasyDetectionGrader()
-    return grader.grade(state, ground_truth)

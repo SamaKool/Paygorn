@@ -225,6 +225,7 @@ def run_inference() -> None:
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)
     finally:
+
         # Get the final step's reward as the overall score
         raw_score = all_rewards[-1] if all_rewards else 0.1
         
