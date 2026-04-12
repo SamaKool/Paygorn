@@ -1,21 +1,8 @@
 from __future__ import annotations
-import sys
-import os
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
-
-# 1. IMPORT THE EASY GRADER FROM THE DETECTION FILE
-from graders.grader_detection import EasyDetectionGrader
 
 TASK_ID = "anomaly_detection_easy"
 MAX_STEPS = 5
 DIFFICULTY = "easy"
-
-# 2. INSTANTIATE THE EASY GRADER
-grader = EasyDetectionGrader()
 
 def get_task_config() -> dict:  
     return {
@@ -60,6 +47,8 @@ def run_episode(env, agent_fn) -> dict:
         print(f"[task_easy] run_episode error at step {steps_done}: {exc}")
 
     # Always grade — even partial data yields a valid score via perfect_signal fallback
+    from graders.grader_detection import EasyDetectionGrader
+    grader = EasyDetectionGrader()
     final_score = grader.grade(env.state)
 
     return {

@@ -158,7 +158,9 @@ def _call_llm(step: int, features: list[list[float]]) -> list[int]:
     fallback_decisions = []
     for row in features:
         if len(row) >= 4:
-            fallback_decisions.append(1 if row[3] >= 0.7 else 0)
+            # Matches SYSTEM_PROMPT: 1 if > 0.60, 0 if < 0.30, 1 if in between.
+            risk_score = row[3]
+            fallback_decisions.append(0 if risk_score < 0.30 else 1)
         else:
             fallback_decisions.append(1)
             
@@ -175,6 +177,18 @@ def run_inference() -> None:
 
     try:
         env = FinAuditorEnvironment()
+        
+        # Determine the correct task configuration dynamically based on TASK_ID
+        if "easy" in TASK_ID.lower():
+            from tasks.task1_easy import setup_env
+            setup_env(env)
+        elif "medium" in TASK_ID.lower():
+            from tasks.task2_medium import setup_env
+            setup_env(env)
+        else:
+            from tasks.task3_hard import setup_env
+            setup_env(env)
+
         obs = env.reset()
 
         for step_num in range(1, MAX_STEPS + 1):
@@ -215,15 +229,9 @@ def run_inference() -> None:
         if not all_rewards:
             all_rewards = [0.1]
             
-        current_sum = sum(all_rewards)
-        
-        if current_sum <= 0.1:
-            # If the script crashed or agent scored nothing, inject the grader floor
-            all_rewards[-1] = 0.1
-        elif current_sum >= 1.0:
-            # If floating point math drifted to 1.0+, force the final entry down
-            excess = current_sum - 0.99
-            all_rewards[-1] = max(0.0, all_rewards[-1] - excess)
+        # Ensure absolutely no element is exactly 0.0 or 1.0 or outside the valid range.
+        for i in range(len(all_rewards)):
+            all_rewards[i] = float(max(0.01, min(0.99, all_rewards[i])))
             
         # 5. Format and emit the unbreakable [END] tag strictly in plain text (NO JSON)
         success_str = "true" if success else "false"

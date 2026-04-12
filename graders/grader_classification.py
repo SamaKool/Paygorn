@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from typing import Any
 
 # MEDIUM MODE: Standard HFT penalties.
@@ -19,6 +20,7 @@ class MediumClassificationGrader:
     """
     def __init__(self) -> None:
         self.last_breakdown: dict[str, Any] = {}
+        print("[GRADER] MediumClassificationGrader initialized", flush=True)
 
     def grade(self, state: Any = None, ground_truth: dict[str, Any] | None = None) -> float:
         """Return a float strictly in (_SCORE_MIN, _SCORE_MAX)."""
@@ -43,6 +45,11 @@ class MediumClassificationGrader:
         negative_signal = (fp * _FP_PENALTY) + (fn * _FN_PENALTY)
 
         raw_score = max(0.0, positive_signal - negative_signal) / perfect_signal
+        
+        # Guard against zero-division NaN or infinity escaping
+        if not math.isfinite(raw_score):
+            raw_score = 0.0
+
         # Double-clamp: first to [0,1] then to our exclusive-boundary window.
         score = float(max(_SCORE_MIN, min(_SCORE_MAX, raw_score)))
         self.last_breakdown = {

@@ -1,21 +1,8 @@
 from __future__ import annotations
-import sys
-import os
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
-
-# 1. IMPORT THE HARD GRADER FROM THE FIX FILE
-from graders.grader_fix import HardFixGrader
 
 TASK_ID = "anomaly_detection_hard"
 MAX_STEPS = 20
 DIFFICULTY = "hard"
-
-# 2. INSTANTIATE THE HARD GRADER
-grader = HardFixGrader()
 
 def get_task_config() -> dict:
     return {
@@ -61,6 +48,8 @@ def run_episode(env, agent_fn) -> dict:
         print(f"[task_hard] run_episode error at step {steps_done}: {exc}")
 
     # Always grade — even partial data yields a valid score via perfect_signal fallback
+    from graders.grader_fix import HardFixGrader
+    grader = HardFixGrader()
     final_score = grader.grade(env.state)
 
     return {
