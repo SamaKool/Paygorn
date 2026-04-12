@@ -104,7 +104,6 @@ public:
     observation_matrix_.resize(obs_capacity_ * 4, 0.0f);
     anomaly_matrix_.resize(anomaly_capacity_ * 4, 0.0f);
     reward_details_.resize(reward_details_capacity_, 0.0f);
-
   }
 
   // ================================================================
@@ -299,7 +298,7 @@ public:
     const double delta_max_d = static_cast<double>(TimerWheel::DELTA_MAX_NS);
     size_t row = 0;
 
-    const uint32_t* active_indices = pool_.active_indices();
+    const uint32_t *active_indices = pool_.active_indices();
     for (size_t i = 0; i < active; ++i) {
       const uint32_t idx = active_indices[i];
       const auto &slot = pool_.slot_at(idx);
