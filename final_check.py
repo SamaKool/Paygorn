@@ -126,10 +126,10 @@ class FinalIntegrityCheck(unittest.TestCase):
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = json.dumps({"reasoning": "test", "decisions": [1] * 200})
         
-        with patch("openai.resources.chat.completions.Completions.create", return_value=mock_response):
+        with patch("inference._client.chat.completions.create", return_value=mock_response):
             f = io.StringIO()
             with redirect_stdout(f):
-                inference.main()
+                inference.run_inference()
             
             output = f.getvalue()
             lines = [l for l in output.strip().split("\n") if l.strip()]
