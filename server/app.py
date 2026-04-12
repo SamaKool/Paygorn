@@ -133,7 +133,7 @@ async def auto_bootstrap():
 
 @app.middleware("http")
 async def capture_step_latency(request: Request, call_next):
-    if request.url.path == "/step":
+    if request.url.path in ("/step", "/dashboard/step"):
         start_ns = time.perf_counter_ns()
         response = await call_next(request)
         app_metrics["last_step_latency_us"] = (time.perf_counter_ns() - start_ns) / 1000.0
@@ -225,10 +225,10 @@ async def get_state():
         "latency_us": round(latency_us, 3),
         "latency_source": "grounded_app_middleware", 
         "throughput_m": round((40 * 1e6) / (latency_us * 1000), 2) if latency_us > 0 else 0.0,
-        "active_count": active_env_instance.engine.active_count,
+        "active_count": active_env_instance.engine.last_expired_count,
         "total_ingested": active_env_instance.engine.total_ingested,
         "ring_buffer_size": active_env_instance.engine.ring_buffer_size,
-        "buffer_saturation": (active_env_instance.engine.ring_buffer_size / active_env_instance.engine.pool_capacity) * 100,
+        "buffer_saturation": min(100.0, (active_env_instance.engine.last_expired_count / 100.0) * 100),
         "step_count": active_env_instance.state.step_count,
         "metrics": {"tp": tp, "tn": tn, "fp": fp, "fn": fn},
         "difficulty": getattr(active_env_instance, 'difficulty', "EASY")

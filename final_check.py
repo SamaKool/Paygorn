@@ -161,6 +161,13 @@ class FinalIntegrityCheck(unittest.TestCase):
             self.assertNotIn("{", output, "Stdout must not contain JSON braces")
             self.assertNotIn("}", output, "Stdout must not contain JSON braces")
 
+            # Verify STRICT line-type matching (Absolutely NO unauthorized prints)
+            for l in lines:
+                self.assertTrue(
+                    l.startswith("[START]") or l.startswith("[STEP]") or l.startswith("[END]"),
+                    f"Unauthorized line detected in STDOUT: {l}"
+                )
+
         print("✓ Stdout format is compliant with hackathon regex rules.")
 
 if __name__ == "__main__":

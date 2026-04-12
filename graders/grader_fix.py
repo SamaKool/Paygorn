@@ -21,7 +21,6 @@ class HardFixGrader:
 
     def __init__(self) -> None:
         self.last_breakdown: dict[str, Any] = {}
-        print("[GRADER] HardFixGrader initialized", flush=True)
 
     def grade(self, env: Any = None, *args, **kwargs) -> float:
         """Return a float strictly in (_SCORE_MIN, _SCORE_MAX)."""
