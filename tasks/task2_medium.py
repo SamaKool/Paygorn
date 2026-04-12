@@ -9,7 +9,7 @@ def get_task_config() -> dict:
         "id": TASK_ID,
         "difficulty": DIFFICULTY,
         "max_steps": MAX_STEPS,
-        "grader": grader,
+        "grader": "graders.grader_classification:MediumClassificationGrader",
         "description": "MEDIUM — Faster ingestion, tighter metrics."
     }
 
@@ -50,7 +50,7 @@ def run_episode(env, agent_fn) -> dict:
     # Always grade — even partial data yields a valid score via perfect_signal fallback
     from graders.grader_classification import MediumClassificationGrader
     grader = MediumClassificationGrader()
-    final_score = grader.grade(env.state)
+    final_score = grader.grade(env)
 
     return {
         "task": TASK_ID,

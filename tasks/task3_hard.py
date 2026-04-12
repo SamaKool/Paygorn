@@ -9,7 +9,7 @@ def get_task_config() -> dict:
         "id": TASK_ID,
         "difficulty": DIFFICULTY,
         "max_steps": MAX_STEPS,
-        "grader": grader,
+        "grader": "graders.grader_fix:HardFixGrader",
         "description": "HARD — Maximum throughput adversarial trading."
     }
 
@@ -50,7 +50,7 @@ def run_episode(env, agent_fn) -> dict:
     # Always grade — even partial data yields a valid score via perfect_signal fallback
     from graders.grader_fix import HardFixGrader
     grader = HardFixGrader()
-    final_score = grader.grade(env.state)
+    final_score = grader.grade(env)
 
     return {
         "task": TASK_ID,

@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 
+"""
+Inference Script for FinAuditor
+===================================
+Refactored to strictly match the STDOUT FORMAT template.
+"""
+
+import asyncio
 import os
 import sys
 import json
@@ -7,7 +14,8 @@ import re
 import datetime
 import traceback
 import time
-from typing import List
+import textwrap
+from typing import List, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -18,7 +26,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from openai import OpenAI
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 try:
     from hft_auditor_env import FinAuditorEnv as FinAuditorEnvironment
@@ -31,14 +39,15 @@ class LLMResponse(BaseModel):
     reasoning: str
     decisions: List[int]
 
-API_BASE_URL: str = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME:   str = os.getenv("MODEL_NAME", "meta-llama/Meta-Llama-3-8B-Instruct")
-HF_TOKEN:     str = os.getenv("HF_TOKEN")
+API_BASE_URL: str = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME:   str = os.getenv("MODEL_NAME") or "meta-llama/Meta-Llama-3-8B-Instruct"
+HF_TOKEN:     str = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
 if not HF_TOKEN:
-    raise ValueError("CRITICAL: HF_TOKEN environment variable is missing.")
+    print("[DEBUG] CRITICAL: HF_TOKEN environment variable is missing.", flush=True)
 
 TASK_ID:      str = os.getenv("TASK_ID", "anomaly_detection_hard")
+BENCHMARK:    str = os.getenv("BENCHMARK", "fin_auditor")
 
 if "easy" in TASK_ID.lower():
     _DEFAULT_MAX = 5
@@ -48,31 +57,48 @@ else:
     _DEFAULT_MAX = 20
 
 MAX_STEPS:    int = int(os.getenv("MAX_STEPS", str(_DEFAULT_MAX)))
+TEMPERATURE = 0.0
+MAX_TOKENS = 1500
+SUCCESS_SCORE_THRESHOLD = 0.5  # Need 50%+ to succeed
 
-_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+SYSTEM_PROMPT = textwrap.dedent(
+    """
+    You are a Wall Street Compliance Auditor AI embedded inside a High-Frequency Trading audit engine.
+    You MUST think step-by-step in the 'reasoning' field before determining your action.
 
-SYSTEM_PROMPT = """\
-You are a Wall Street Compliance Auditor AI embedded inside a High-Frequency Trading audit engine.
-You MUST think step-by-step in the 'reasoning' field before determining your action.
+    ━━━ DECISION VALUES ━━━
+    You must output ONLY raw integers (0 or 1) in the array. NO strings. NO labels.
+      1 : Confirmed anomaly.
+      0 : Trade is clean.
 
-━━━ DECISION VALUES ━━━
-You must output ONLY raw integers (0 or 1) in the array. NO strings. NO labels.
-  1 : Confirmed anomaly.
-  0 : Trade is clean.
+    ━━━ EVALUATION DIRECTIVE ━━━
+    1. CRITICAL SIGNAL (FLAG): If risk_score > 0.60, output 1.
+    2. NOISE SIGNAL (PASS): If risk_score < 0.30, output 0.
+    3. AMBIGUITY (FLAG): If risk_score is in between, output 1 to be safe.
 
-━━━ EVALUATION DIRECTIVE ━━━
-1. CRITICAL SIGNAL (FLAG): If risk_score > 0.60, output 1.
-2. NOISE SIGNAL (PASS): If risk_score < 0.30, output 0.
-3. AMBIGUITY (FLAG): If risk_score is in between, output 1 to be safe.
+    ━━━ CRITICAL JSON FORMAT ━━━
+    You MUST respond with a valid JSON object. The decisions array MUST contain exactly the requested number of raw integers. NO trailing commas.
+    Example:
+    {"reasoning": "Trade 1 has high risk. Trade 2 is safe.", "decisions": [1, 0, 1]}
+    """
+).strip()
 
-━━━ CRITICAL JSON FORMAT ━━━
-You MUST respond with a valid JSON object. The decisions array MUST contain exactly the requested number of raw integers. NO trailing commas.
-Example:
-{"reasoning": "Trade 1 has high risk. Trade 2 is safe.", "decisions": [1, 0, 1]}
-"""
+_last_reasoning: str = ""
 
-def _ts() -> str:
-    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 def _build_user_prompt(step: int, features: list[list[float]]) -> str:
     lines = [
@@ -89,8 +115,6 @@ def _build_user_prompt(step: int, features: list[list[float]]) -> str:
     lines.append("")
     lines.append(f"Provide exactly {len(features)} decisions as a JSON object.")
     return "\n".join(lines)
-
-_last_reasoning: str = ""
 
 def _parse_llm_decisions(content: str, expected_count: int) -> list[int]:
     global _last_reasoning
@@ -133,7 +157,7 @@ def _normalize_decisions(decisions: list[int], expected: int) -> list[int]:
         clamped.append(1) 
     return clamped
 
-def _call_llm(step: int, features: list[list[float]]) -> list[int]:
+def get_model_message(client: OpenAI, step: int, features: list[list[float]]) -> list[int]:
     global _last_reasoning
     _last_reasoning = "Fallback triggered."
     user_prompt = _build_user_prompt(step, features)
@@ -141,24 +165,25 @@ def _call_llm(step: int, features: list[list[float]]) -> list[int]:
 
     for attempt in range(max_retries):
         try:
-            response = _client.chat.completions.create(
+            completion = client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user",   "content": user_prompt},
                 ],
-                max_tokens=1500,
-                temperature=0.0,
+                max_tokens=MAX_TOKENS,
+                temperature=TEMPERATURE,
+                stream=False,
             )
-            content = response.choices[0].message.content or ""
+            content = (completion.choices[0].message.content or "").strip()
             return _parse_llm_decisions(content, len(features))
-        except Exception as e:
+        except Exception as exc:
+            print(f"[DEBUG] Model request failed: {exc}", flush=True)
             time.sleep(1)
 
     fallback_decisions = []
     for row in features:
         if len(row) >= 4:
-            # Matches SYSTEM_PROMPT: 1 if > 0.60, 0 if < 0.30, 1 if in between.
             risk_score = row[3]
             fallback_decisions.append(0 if risk_score < 0.30 else 1)
         else:
@@ -166,19 +191,20 @@ def _call_llm(step: int, features: list[list[float]]) -> list[int]:
             
     return fallback_decisions
 
-def run_inference() -> None:
-    # 1. Initialize all tracking variables for the safety net
-    steps_completed: int = 0
-    all_rewards: list[float] = []
-    success: bool = False
+def main() -> None:
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
-    # 2. Emitting [START] strictly in plain text (NO JSON)
-    print(f"[START] task={TASK_ID} env=fin_auditor model={MODEL_NAME}", flush=True)
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
 
+    log_start(task=TASK_ID, env=BENCHMARK, model=MODEL_NAME)
+
+    env = None
     try:
         env = FinAuditorEnvironment()
         
-        # Determine the correct task configuration dynamically based on TASK_ID
         if "easy" in TASK_ID.lower():
             from tasks.task1_easy import setup_env
             setup_env(env)
@@ -191,49 +217,54 @@ def run_inference() -> None:
 
         obs = env.reset()
 
-        for step_num in range(1, MAX_STEPS + 1):
-            step_reward = 0.0  
+        for step in range(1, MAX_STEPS + 1):
             features = obs.features
 
             if not features:
+                decisions = []
                 action = AuditorAction(decisions=[])
                 global _last_reasoning
                 _last_reasoning = "Empty matrix."
             else:
-                decisions = _call_llm(step_num, features)
+                decisions = get_model_message(client, step, features)
                 action = AuditorAction(decisions=decisions)
 
             obs = env.step(action)
-            step_reward = float(obs.reward) if obs.reward is not None else 0.1
-            all_rewards.append(step_reward)
-            steps_completed = step_num
-
-            # 3. Emitting [STEP] strictly in plain text (NO JSON)
-            action_str = ",".join(str(d) for d in action.decisions) if action.decisions else "none"
-            done_str = "true" if obs.done else "false"
             
-            print(f"[STEP] step={step_num} action={action_str} reward={step_reward:.2f} done={done_str} error=null", flush=True)
+            reward = float(obs.reward) if obs.reward is not None else 0.1
+            done = obs.done
+            error = getattr(obs, "error", None)
 
-            if obs.done:
+            rewards.append(reward)
+            steps_taken = step
+            
+            action_str = ",".join(str(d) for d in decisions) if decisions else "none"
+            log_step(step=step, action=action_str, reward=reward, done=done, error=error)
+
+            if done:
                 break
                 
-        # If we made it out of the loop without crashing, we succeeded
-        success = True
+        # Calculate final score based on latest reward (as per Discord guidance clamped strictly)
+        raw_score = rewards[-1] if rewards else 0.1
+        score = max(0.01, min(0.99, float(raw_score)))
+        success = score >= SUCCESS_SCORE_THRESHOLD
 
-    except KeyboardInterrupt:
-        print("[SYS] Interrupted by user.", file=sys.stderr, flush=True)
     except Exception as exc:
+        print(f"[DEBUG] Execution error: {exc}", flush=True)
         traceback.print_exc(file=sys.stderr)
     finally:
-
-        # Get the final step's reward as the overall score
-        raw_score = all_rewards[-1] if all_rewards else 0.1
-        
-        # Clamp it exactly as the Discord instructions require
-        final_score = max(0.01, min(0.99, float(raw_score)))
+        try:
+            if env and hasattr(env, "close"):
+                env.close()
+        except Exception as e:
+            print(f"[DEBUG] env.close() error: {e}", flush=True)
             
-        # Emit the EXACT string format the evaluator is searching for
-        print(f"[END] task={TASK_ID} score={final_score:.2f} steps={steps_completed}", flush=True)
+        # Ensure fallback score if empty
+        if not rewards:
+            rewards = [0.1]
+            score = 0.1
+            
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 if __name__ == "__main__":
-    run_inference()
+    main()
