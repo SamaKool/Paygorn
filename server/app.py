@@ -89,15 +89,51 @@ if HAS_ENV and NATIVE_VERIFIED:
         env_factory,
         AuditorAction,
         AuditorObservation,
+        max_concurrent_envs=4,  # 3 tasks + 1 buffer for probes
     )
 
 else:
     # Fallback for local development without the C++ binary
     app = FastAPI(title="PayGorn (MOCK MODE)")
+
+    @app.get("/health")
+    async def mock_health():
+        return {"status": "healthy"}
+
     @app.post("/reset")
-    async def mock_reset(): return {"reward": 0.01}
+    async def mock_reset(): return {"reward": None}
+
     @app.post("/step")
     async def mock_step(action: dict): return {"reward": 0.5, "done": False, "step_count": 0}
+
+    @app.websocket("/ws")
+    async def mock_ws(websocket: WebSocket):
+        """Bare-minimum WS so Phase 2 gets a valid response, not connection refused."""
+        await websocket.accept()
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                msg = json.loads(raw)
+                msg_type = msg.get("type", "")
+                if msg_type == "reset":
+                    await websocket.send_text(json.dumps({
+                        "type": "observation",
+                        "data": {"observation": {"features": [], "message": "mock"}, "reward": None, "done": False}
+                    }))
+                elif msg_type == "step":
+                    await websocket.send_text(json.dumps({
+                        "type": "observation",
+                        "data": {"observation": {"features": [], "message": "mock"}, "reward": 0.5, "done": True}
+                    }))
+                elif msg_type == "close":
+                    break
+        except WebSocketDisconnect:
+            pass
+        finally:
+            try:
+                await websocket.close()
+            except RuntimeError:
+                pass
 
 # Initialize metrics for the dashboard latency middleware
 app_metrics = {"last_step_latency_us": 0.0}

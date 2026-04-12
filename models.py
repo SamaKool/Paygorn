@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 from typing import List
-from pydantic import StrictFloat
 
 # FIX: Import the OpenEnv base classes instead of BaseModel
 from openenv.core.env_server import Action, Observation
@@ -17,5 +16,5 @@ class AuditorAction(Action):
 class AuditorObservation(Observation):
     # This is the (batch_size, 4) matrix Samarth will send
     # Features: [time_elapsed, price_delta, missing_freq, risk_score]
-    features: List[List[StrictFloat]] 
+    features: List[List[float]] 
     message: str = "Batch processed"
