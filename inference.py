@@ -53,6 +53,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 
 import sys
+import contextlib
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -235,13 +236,19 @@ def main() -> None:
         if "easy" in TASK_ID.lower():
             from tasks.task1_easy import setup_env
             setup_env(env)
+            from graders.grader_detection import EasyDetectionGrader
+            grader = EasyDetectionGrader()
         elif "medium" in TASK_ID.lower():
             from tasks.task2_medium import setup_env
             setup_env(env)
+            from graders.grader_classification import MediumClassificationGrader
+            grader = MediumClassificationGrader()
         else:
             from tasks.task3_hard import setup_env
             setup_env(env)
-
+            from graders.grader_fix import HardFixGrader
+            grader = HardFixGrader()
+            
         obs = env.reset()
 
         for step in range(1, MAX_STEPS + 1):

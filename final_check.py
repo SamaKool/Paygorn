@@ -138,6 +138,7 @@ class FinalIntegrityCheck(unittest.TestCase):
             start_line = lines[0]
             start_match = re.match(r'^\[START\] task=\S+ env=\S+ model=\S+$', start_line)
             self.assertIsNotNone(start_match, f"START line doesn't match regex: {start_line}")
+            self.assertEqual(lines[0], start_line, "The first non-empty line MUST be the [START] tag.")
             
             # Verify STEP tag format
             step_lines = [l for l in lines if l.startswith("[STEP]")]
