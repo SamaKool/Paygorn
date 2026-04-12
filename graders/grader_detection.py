@@ -20,15 +20,23 @@ class EasyDetectionGrader:
         fn = float(getattr(state, "total_fn", 0))
 
         total = tp + tn + fp + fn
-        if total == 0:
-            return 0.01
+                
+        # The maximum possible score if they made zero mistakes
+        actual_anomalies = tp + fn
+        actual_valid = tn + fp
+        
+        perfect_signal = (actual_anomalies * _TP_WEIGHT) + (actual_valid * _TN_WEIGHT)
+        
+        if perfect_signal == 0:
+            return 0.1
 
         positive_signal = (tp * _TP_WEIGHT) + (tn * _TN_WEIGHT)
         negative_signal = (fp * _FP_PENALTY) + (fn * _FN_PENALTY)
 
-        max_signal = total * _TP_WEIGHT
-        raw_score = max(0.0, positive_signal - negative_signal) / max_signal
+        # Normalize against the true perfect scenario
+        raw_score = max(0.0, positive_signal - negative_signal) / perfect_signal
 
-        score = max(0.01, min(0.99, raw_score))
+        # Strict hackathon boundary
+        score = max(0.1, min(0.99, raw_score))
         self.last_breakdown = {"tp": int(tp), "tn": int(tn), "fp": int(fp), "fn": int(fn), "score": score}
         return score

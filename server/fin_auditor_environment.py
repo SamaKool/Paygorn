@@ -170,22 +170,25 @@ class FinAuditorEnvironment(Environment):
         anomalies: list[list[float]] = self.engine.get_anomaly_matrix().tolist()
         done = self._state.step_count >= self._MAX_EPISODE_STEPS
 
-        # 4. COMPUTE LIVE STEP REWARD from cumulative episode performance
-        #    Uses same asymmetric weights as FinAuditorGrader so the dashboard
-        #    value is consistent with the official final episode score.
+        # 4. COMPUTE LIVE STEP REWARD
         tp = float(self._state.total_tp)
         tn = float(self._state.total_tn)
         fp = float(self._state.total_fp)
         fn = float(self._state.total_fn)
-        total = tp + tn + fp + fn
+        
+        actual_anomalies = tp + fn
+        actual_valid = tn + fp
+        perfect_signal = (actual_anomalies * 1.0) + (actual_valid * 0.1)
 
-        if total > 0:
-            positive = tp * 1.0 + tn * 0.1
-            negative = fp * 0.1 + fn * 0.4
-            raw = max(0.0, positive - negative) / (total * 1.0)
-            step_reward = max(0.01, min(0.99, raw))
+        if perfect_signal > 0:
+            positive = (tp * 1.0) + (tn * 0.1)
+            negative = (fp * 0.1) + (fn * 0.4) 
+            raw = max(0.0, positive - negative) / perfect_signal
+            # REDDIT FIX: Changed 0.01 to 0.1
+            step_reward = max(0.1, min(0.99, raw))
         else:
-            step_reward = 0.01  # floor before any decisions are made
+            # REDDIT FIX: Changed 0.01 to 0.1
+            step_reward = 0.1  
 
         return FinAuditorObservation(
             features=anomalies,
