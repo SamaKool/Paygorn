@@ -7,11 +7,12 @@ port: 8000
 
 tasks:
   - id: anomaly_detection_easy
+    name: "Anomaly Detection (EASY)"
     description: >
       EASY — Detect expired/unreconciled trades. After a reset, trades
       are ingested and immediately aged past the 5-second max window.
       The agent must call /step and receive the anomaly matrix. A valid
-      response requires at least one trade flagged (decision=2) in the
+      response requires at least one trade flagged (decision=1) in the
       action sent to /step.
     grader: "graders.grader_detection:EasyDetectionGrader"
     difficulty: "easy"
@@ -20,6 +21,7 @@ tasks:
     score_range: [0.0, 1.0]
 
   - id: anomaly_detection_medium
+    name: "Anomaly Detection (MEDIUM)"
     description: >
       MEDIUM — Identify high-risk counterparties. The agent must process
       the anomaly matrix and flag all trades where risk_score > 0.5.
@@ -32,6 +34,7 @@ tasks:
     score_range: [0.0, 1.0]
 
   - id: anomaly_detection_hard
+    name: "Anomaly Detection (HARD)"
     description: >
       HARD — Systemic anomaly triage. The agent must detect when
       missing_frequency > 0.3, indicating a systemic anomaly wave,

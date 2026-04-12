@@ -188,7 +188,8 @@ async def execute_llm_step(api_key: str, base_url: str, model_name: str, batch_s
                 {"role": "user", "content": "Analyze the telemetry stream and output the decision matrix."}
             ],
             response_format={"type": "json_object"},
-            temperature=0.2 
+            temperature=0.2,
+            max_tokens=2000
         )
         result = json.loads(response.choices[0].message.content)
         decisions = result.get("decisions", [])
@@ -404,21 +405,21 @@ async def get_grader():
         "tasks": [
             {
                 "task_id":     "anomaly_detection_easy",
-                "grader":      "EasyDetectionGrader",
+                "grader":      "graders.grader_detection:EasyDetectionGrader",
                 "score":       round(easy_score,   4),
                 "max_steps":   5,
                 "difficulty":  "easy",
             },
             {
                 "task_id":     "anomaly_detection_medium",
-                "grader":      "MediumClassificationGrader",
+                "grader":      "graders.grader_classification:MediumClassificationGrader",
                 "score":       round(medium_score, 4),
                 "max_steps":   10,
                 "difficulty":  "medium",
             },
             {
                 "task_id":     "anomaly_detection_hard",
-                "grader":      "HardFixGrader",
+                "grader":      "graders.grader_fix:HardFixGrader",
                 "score":       round(hard_score,   4),
                 "max_steps":   20,
                 "difficulty":  "hard",
