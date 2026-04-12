@@ -209,7 +209,7 @@ def get_model_message(client: OpenAI, step: int, features: list[list[float]]) ->
         if len(row) >= 4:
             # Matches SYSTEM_PROMPT: 1 if > 0.60, 0 if < 0.30, 1 if in between.
             risk_score = row[3]
-            fallback_decisions.append(0.01 if risk_score < 0.30 else 0.99)
+            fallback_decisions.append(0 if risk_score < 0.30 else 1)
         else:
             fallback_decisions.append(1)
             
