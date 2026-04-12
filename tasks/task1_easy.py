@@ -34,3 +34,39 @@ def setup_env(env) -> None:
             env._MAX_EPISODE_STEPS = MAX_STEPS
     except Exception as e:
         print(f"[task_easy] Could not set difficulty: {e}")
+
+def run_episode(env, agent_fn) -> dict:
+    """Run a single EASY anomaly-detection episode and return the graded result.
+
+    Called by the OpenEnv evaluator. agent_fn receives an observation and
+    returns a list of binary decisions (0 = valid, 1 = anomaly).
+    """
+    setup_env(env)
+    total_reward = 0.0
+    steps_done = 0
+
+    try:
+        obs = env.reset()
+        for _ in range(MAX_STEPS):
+            decisions = agent_fn(obs)
+            from models import AuditorAction
+            action = AuditorAction(decisions=decisions)
+            obs = env.step(action)
+            total_reward += float(obs.reward) if obs.reward is not None else 0.0
+            steps_done += 1
+            if obs.done:
+                break
+    except Exception as exc:
+        print(f"[task_easy] run_episode error at step {steps_done}: {exc}")
+
+    # Always grade — even partial data yields a valid score via perfect_signal fallback
+    final_score = grader.grade(env.state)
+
+    return {
+        "task": TASK_ID,
+        "difficulty": DIFFICULTY,
+        "steps": steps_done,
+        "total_reward": round(total_reward, 4),
+        "score": round(final_score, 4),
+        "grader_breakdown": grader.last_breakdown,
+    }

@@ -137,7 +137,7 @@ class FinAuditorEnvironment(Environment):
         return FinAuditorObservation(
             features=anomalies,
             message=f"Fin Auditor engine ready. {len(anomalies)} trades loaded.",
-            reward=0.0,
+            reward=0.1,
             done=False
         )
 

@@ -13,31 +13,27 @@ class MediumClassificationGrader:
     def __init__(self) -> None:
         self.last_breakdown: dict[str, Any] = {}
 
-    def grade(self, state: Any, ground_truth: dict[str, Any] | None = None) -> float:
+    def grade(self, state: Any = None, ground_truth: dict[str, Any] | None = None) -> float:
+        if state is None:
+            self.last_breakdown = {"error": "empty_state_ping", "score": 0.1}
+            return 0.1
+
         tp = float(getattr(state, "total_tp", 0))
         tn = float(getattr(state, "total_tn", 0))
         fp = float(getattr(state, "total_fp", 0))
         fn = float(getattr(state, "total_fn", 0))
 
-        total = tp + tn + fp + fn
-        
-        # The maximum possible score if they made zero mistakes
         actual_anomalies = tp + fn
         actual_valid = tn + fp
-        
         perfect_signal = (actual_anomalies * _TP_WEIGHT) + (actual_valid * _TN_WEIGHT)
-        
+
         if perfect_signal == 0:
             return 0.1
 
         positive_signal = (tp * _TP_WEIGHT) + (tn * _TN_WEIGHT)
         negative_signal = (fp * _FP_PENALTY) + (fn * _FN_PENALTY)
 
-        # Normalize against the true perfect scenario
         raw_score = max(0.0, positive_signal - negative_signal) / perfect_signal
-
-        # Strict hackathon boundary
         score = max(0.1, min(0.99, raw_score))
-        
         self.last_breakdown = {"tp": int(tp), "tn": int(tn), "fp": int(fp), "fn": int(fn), "score": score}
         return score
