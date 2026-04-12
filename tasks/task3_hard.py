@@ -7,13 +7,15 @@ _ROOT = os.path.abspath(os.path.join(_HERE, ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from graders.grader_detection import FinAuditorGrader
+# 1. IMPORT THE HARD GRADER FROM THE FIX FILE
+from graders.grader_fix import HardFixGrader
 
 TASK_ID = "anomaly_detection_hard"
 MAX_STEPS = 20
 DIFFICULTY = "hard"
 
-grader = FinAuditorGrader()
+# 2. INSTANTIATE THE HARD GRADER
+grader = HardFixGrader()
 
 def get_task_config() -> dict:
     return {

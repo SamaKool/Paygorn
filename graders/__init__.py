@@ -1,16 +1,18 @@
-"""Graders package for OpenEnv environments.
+"""Graders package for Elite-Trade-Sentry HFT environments.
 
 Exports
 -------
-    FinAuditorGrader  — HFT Auditor: asymmetric TP/FP/FN weighting (in grader_detection)
-    FeasibilityGrader — Task 1: binary feasible / infeasible
-    ConflictGrader    — Task 2: 5-class constraint-violation classification
-    RepairGrader      — Task 3: multi-component schedule repair
+    EasyDetectionGrader        - Task 1: Forgiving penalties (0.1 FP / 0.2 FN).
+    MediumClassificationGrader - Task 2: Standard HFT penalties (0.2 FP / 0.4 FN).
+    HardFixGrader              - Task 3: Brutal adversarial penalties (0.4 FP / 0.8 FN).
 """
 
-from graders.grader_detection import FeasibilityGrader, FinAuditorGrader
-from graders.grader_classification import ConflictGrader
-from graders.grader_fix import RepairGrader
+from graders.grader_detection import EasyDetectionGrader
+from graders.grader_classification import MediumClassificationGrader
+from graders.grader_fix import HardFixGrader
 
-__all__ = ["FinAuditorGrader", "FeasibilityGrader", "ConflictGrader", "RepairGrader"]
-
+__all__ = [
+    "EasyDetectionGrader", 
+    "MediumClassificationGrader", 
+    "HardFixGrader"
+]

@@ -25,10 +25,13 @@ if _ROOT_DIR not in sys.path:
 if _CURRENT_DIR not in sys.path:
     sys.path.insert(0, _CURRENT_DIR)
 
+# Always define this as a safe global so /dashboard/state never throws NameError
+# even when NATIVE_VERIFIED is False (C++ binary missing).
+active_env_instance = None
+
 try:
-    from fin_auditor_environment import FinAuditorEnvironment, hft_auditor
+    from server.fin_auditor_environment import FinAuditorEnvironment, hft_auditor
     from models import AuditorAction, AuditorObservation
-    from graders.grader_detection import FinAuditorGrader
     from tasks import task1_easy, task2_medium, task3_hard
 
     HAS_ENV = True
@@ -47,32 +50,40 @@ except ImportError as e:
 # ==============================================================================
 
 if HAS_ENV and NATIVE_VERIFIED:
-    # 1. Create a single tracked instance so your custom dashboard can read live metrics
-    global active_env_instance
+    # ── Dashboard singleton ────────────────────────────────────────────────────
+    # Used ONLY by /dashboard/* endpoints and /ws/telemetry for live telemetry.
+    # NEVER passed to create_app — OpenEnv gets a factory that produces isolated
+    # instances per session so close() cannot corrupt the dashboard engine.
     active_env_instance = FinAuditorEnvironment()
+    # Pre-load the first batch so the dashboard has real data immediately.
+    # (reset() calls generate_batch internally, so just call reset here.)
+    active_env_instance.reset()
 
-    # 2. Register environment, action/obs models, and pass the RAW TASK MODULES
-    try:
-        app = create_app(
-            lambda: active_env_instance,  # This preserves your custom UI dashboard!
-            AuditorAction,
-            AuditorObservation,
-            tasks=[
-                task1_easy,
-                task2_medium,
-                task3_hard
-            ]
-        )
-    except TypeError as e:
-        print(f"[CRITICAL] OpenEnv framework version mismatch: {e}")
-        # Fallback if the local OpenEnv version doesn't support tasks kwargs
-        app = create_app(lambda: active_env_instance, AuditorAction, AuditorObservation)
+    # ── OpenEnv factory ────────────────────────────────────────────────────────
+    # CRITICAL: OpenEnv's WebSocket server creates ONE env per session via
+    # env_factory() and then sends reset + step messages to the SAME instance.
+    # This means reset() IS called before step(), so the C++ engine has data.
+    # For HTTP mode (stateless), each request gets its own env — step() is called
+    # on a cold engine, but our __init__ initialises counters to 0 so it won't
+    # crash; it will just return the floor reward of 0.01 (acceptable for Phase 2).
+    def env_factory() -> FinAuditorEnvironment:
+        """Create a fresh, self-contained FinAuditorEnvironment per OpenEnv session."""
+        return FinAuditorEnvironment()
+
+    # NOTE: create_app() has no `tasks=` parameter in openenv-core >= 0.2.x.
+    # Task routing (easy/medium/hard difficulty) is handled inside reset() via
+    # the task_id kwarg that Phase 2 injects into the reset message body.
+    app = create_app(
+        env_factory,
+        AuditorAction,
+        AuditorObservation,
+    )
 
 else:
     # Fallback for local development without the C++ binary
     app = FastAPI(title="PayGorn (MOCK MODE)")
     @app.post("/reset")
-    async def mock_reset(): return {"reward": 0.0}
+    async def mock_reset(): return {"reward": 0.01}
     @app.post("/step")
     async def mock_step(action: dict): return {"reward": 0.5, "done": False, "step_count": 0}
 
@@ -230,7 +241,48 @@ async def get_dashboard_action(req: ActionRequest):
         decisions = await execute_llm_step(api_key, base_url, model_name, batch_size)
     else:
         decisions = [random.choice([0, 1]) for _ in range(batch_size)]
-    return {"decisions": decisions} 
+    return {"decisions": decisions}
+
+
+class DashboardStepRequest(BaseModel):
+    """Action payload for the dashboard-native step endpoint."""
+    decisions: List[int]
+
+
+@app.post("/dashboard/step")
+async def dashboard_step(req: DashboardStepRequest):
+    """
+    Dashboard-native step: runs on the SINGLETON engine (warm, with real trade data),
+    not on the OpenEnv /step route which creates a cold engine per request.
+
+    This is what the three dashboard buttons (OPTIMAL / STRESS / LLM) call so that
+    rewards reflect actual confusion-matrix scoring rather than the 0.01 floor.
+    """
+    if not active_env_instance or not NATIVE_VERIFIED:
+        raise HTTPException(status_code=503, detail="Native engine not available")
+
+    from models import AuditorAction
+    action = AuditorAction(decisions=req.decisions)
+    obs = active_env_instance.step(action)
+    return {
+        "reward": obs.reward,
+        "done": obs.done,
+        "step_count": active_env_instance.state.step_count,
+        "features_shape": [len(obs.features), len(obs.features[0]) if obs.features else 0],
+    } 
+
+
+@app.post("/dashboard/reset")
+async def dashboard_reset():
+    """
+    Reset the dashboard singleton: re-seeds the ring buffer with fresh trade data.
+    Called by the [FLUSH_SPSC_BUFFER] button in the dashboard JS.
+    """
+    if not active_env_instance or not NATIVE_VERIFIED:
+        raise HTTPException(status_code=503, detail="Native engine not available")
+    active_env_instance.reset()
+    return {"status": "ok", "step_count": active_env_instance.state.step_count}
+
 
 @app.post("/config/llm")
 async def config_llm(cfg: LLMConfig):
@@ -704,10 +756,10 @@ async def root_dashboard():
     async function executeReset() {
         logMsg("SPSC_BUFFER_FLUSHING...", "warn");
         try {
-            await fetch('/reset', {method: 'POST'});
-            ledgerBody.innerHTML = ''; 
+            await fetch('/dashboard/reset', {method: 'POST'});
+            ledgerBody.innerHTML = '';
             updateState();
-            logMsg("Memory pool purged.", "success");
+            logMsg("Memory pool purged and re-seeded.", "success");
         } catch(e) {
             logMsg("Reset failed: " + e.message, "err");
         }
@@ -721,48 +773,33 @@ async def root_dashboard():
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({action_type: actionType})
             });
-            
             if (!actionRes.ok) {
                 const errData = await actionRes.json();
                 logMsg("LLM Error: " + (errData.detail || "Failed to generate decisions"), "err");
                 return;
             }
-            
             const actionData = await actionRes.json();
-            if(!actionData.decisions) {
-                logMsg("Decision matrix generation failed.", "err"); return;
-            }
+            if(!actionData.decisions) { logMsg("Decision matrix generation failed.", "err"); return; }
 
             logMsg(`Executing Step with ${actionData.decisions.length} decisions...`, "info");
 
-            const res = await fetch('/step', {
+            // POST to /dashboard/step (warm singleton) NOT /step (cold factory engine)
+            const res = await fetch('/dashboard/step', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ action: actionData }) 
+                body: JSON.stringify({ decisions: actionData.decisions })
             });
-            
             if (!res.ok) {
                 const errorData = await res.json();
-                console.error("Validation Details:", errorData);
-                logMsg(`Server Error: ${res.status}. Check browser console.`, "err"); 
+                logMsg(`Server Error: ${res.status} — ${errorData.detail || 'check logs'}`, "err");
                 return;
             }
-            
             const data = await res.json();
+            const reward = data.reward ?? 0.0;
+            const done   = data.done   ?? false;
+            const step   = data.step_count ?? 'N/A';
 
-            // FIX: Robust payload extraction handling regardless of OpenEnv wrapper depth
-            const reward = data.reward ?? data.observation?.reward ?? data.info?.reward ?? 0.0;
-            const done = data.done ?? data.observation?.done ?? data.info?.done ?? false;
-
-            // Fetch the authoritative step count from /dashboard/state
-            let step = 'N/A';
-            try {
-                const stateRes = await fetch('/dashboard/state');
-                const stateData = await stateRes.json();
-                step = stateData.step_count ?? 'N/A';
-            } catch(se) {}  // Swallow — non-critical
-
-            logMsg(`[RECON] Reward: ${reward.toFixed(4)} | Success`, reward >= 0.8 ? 'success' : 'warn');
+            logMsg(`[RECON] Reward: ${reward.toFixed(4)} | Step: ${step}`, reward >= 0.8 ? 'success' : 'warn');
 
             const row = document.createElement('tr');
             row.innerHTML = `
@@ -774,12 +811,12 @@ async def root_dashboard():
             `;
             if(ledgerBody.children.length >= 5) { ledgerBody.removeChild(ledgerBody.firstChild); }
             ledgerBody.appendChild(row);
-
             updateState();
         } catch(e) {
             logMsg("Step Execution Error: " + e.message, "err");
         }
     }
+
 
     // Auto-Reset the environment on boot so it actually has data to process,
     // then try to authenticate with the default HF_TOKEN

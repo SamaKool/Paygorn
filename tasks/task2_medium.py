@@ -7,13 +7,15 @@ _ROOT = os.path.abspath(os.path.join(_HERE, ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from graders.grader_detection import FinAuditorGrader
+# 1. IMPORT THE MEDIUM GRADER FROM THE CLASSIFICATION FILE
+from graders.grader_classification import MediumClassificationGrader
 
 TASK_ID = "anomaly_detection_medium"
 MAX_STEPS = 10
 DIFFICULTY = "medium"
 
-grader = FinAuditorGrader()
+# 2. INSTANTIATE THE MEDIUM GRADER
+grader = MediumClassificationGrader()
 
 def get_task_config() -> dict:
     return {
