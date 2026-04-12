@@ -146,7 +146,15 @@ class FinAuditorEnvironment(Environment):
 
         # 1. EVALUATE AGENT DECISIONS
         if action and action.decisions:
-            action_array = np.array(action.decisions, dtype=np.uint8)
+            # Clamp decisions to current batch size to prevent C++ engine crash
+            # on length mismatch (agent may send fewer/more decisions than trades).
+            current_batch_size = len(self.engine.get_anomaly_matrix())
+            decisions = list(action.decisions)
+            if len(decisions) > current_batch_size:
+                decisions = decisions[:current_batch_size]          # truncate extras
+            elif len(decisions) < current_batch_size:
+                decisions += [0] * (current_batch_size - len(decisions))  # pad with Pass
+            action_array = np.array(decisions, dtype=np.uint8)
             self.engine.compute_reward(action_array)
 
             # ACCUMULATE metrics across the ENTIRE episode for the Grader!
