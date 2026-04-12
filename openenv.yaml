@@ -1,4 +1,4 @@
-version: "1.0.0"
+spec_version: 1
 name: fin_auditor
 type: space
 runtime: fastapi
@@ -25,7 +25,7 @@ tasks:
       the anomaly matrix and flag all trades where risk_score > 0.5.
       Reward is based on precision of high-risk flags. Requires the LLM to
       parse the feature array and make discriminating decisions.
-    grader: "graders.grader_classification:MediumDetectionGrader"
+    grader: "graders.grader_classification:MediumClassificationGrader"
     difficulty: "medium"
     max_steps: 10
     reward_threshold: 0.6

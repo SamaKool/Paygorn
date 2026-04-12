@@ -225,19 +225,14 @@ def run_inference() -> None:
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)
     finally:
-        # 4. The Ultimate Safety Clamp
-        if not all_rewards:
-            all_rewards = [0.1]
-            
-        # Ensure absolutely no element is exactly 0.0 or 1.0 or outside the valid range.
-        for i in range(len(all_rewards)):
-            all_rewards[i] = float(max(0.01, min(0.99, all_rewards[i])))
-            
-        # 5. Format and emit the unbreakable [END] tag strictly in plain text (NO JSON)
-        success_str = "true" if success else "false"
-        rewards_str = ",".join(f"{r:.2f}" for r in all_rewards)
+        # Get the final step's reward as the overall score
+        raw_score = all_rewards[-1] if all_rewards else 0.1
         
-        print(f"[END] success={success_str} steps={steps_completed} rewards={rewards_str}", flush=True)
+        # Clamp it exactly as the Discord instructions require
+        final_score = max(0.01, min(0.99, float(raw_score)))
+            
+        # Emit the EXACT string format the evaluator is searching for
+        print(f"[END] task={TASK_ID} score={final_score:.2f} steps={steps_completed}", flush=True)
 
 if __name__ == "__main__":
     run_inference()

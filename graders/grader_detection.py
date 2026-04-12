@@ -23,12 +23,13 @@ class EasyDetectionGrader:
         self.last_breakdown: dict[str, Any] = {}
         print("[GRADER] EasyDetectionGrader initialized", flush=True)
 
-    def grade(self, state: Any = None, ground_truth: dict[str, Any] | None = None) -> float:
+    def grade(self, env: Any = None, *args, **kwargs) -> float:
         """Return a float strictly in (_SCORE_MIN, _SCORE_MAX)."""
-        if state is None:
-            self.last_breakdown = {"error": "empty_state_ping", "score": _SCORE_MIN}
+        if env is None:
+            self.last_breakdown = {"error": "empty_env_ping", "score": _SCORE_MIN}
             return _SCORE_MIN
 
+        state = getattr(env, "_state", env)
         tp = float(getattr(state, "total_tp", 0))
         tn = float(getattr(state, "total_tn", 0))
         fp = float(getattr(state, "total_fp", 0))
