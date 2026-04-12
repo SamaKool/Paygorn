@@ -51,3 +51,8 @@ class HardFixGrader:
             "score": round(score, 4),
         }
         return score
+
+# Add this wrapper function to the bottom of the file
+def grade_task3_hard(state: Any = None, ground_truth: dict[str, Any] | None = None) -> float:
+    grader = HardFixGrader()
+    return grader.grade(state, ground_truth)

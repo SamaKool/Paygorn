@@ -50,3 +50,10 @@ class MediumClassificationGrader:
             "score": round(score, 4),
         }
         return score
+
+
+# Add this wrapper function to the bottom of grader_classification.py
+def grade_task2_medium(state: Any = None, ground_truth: dict[str, Any] | None = None) -> float:
+    """Instantiates the MediumClassificationGrader and executes the validation."""
+    grader = MediumClassificationGrader()
+    return grader.grade(state, ground_truth)
