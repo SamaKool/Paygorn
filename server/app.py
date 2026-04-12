@@ -91,6 +91,11 @@ if HAS_ENV and NATIVE_VERIFIED:
         AuditorObservation,
     )
 
+    @app.get("/health")
+    async def health_check():
+        """Liveness probe for HF Space / Docker."""
+        return {"status": "healthy", "engine": "NATIVE_ACTIVE" if NATIVE_VERIFIED else "MOCK"}
+
 else:
     # Fallback for local development without the C++ binary
     app = FastAPI(title="PayGorn (MOCK MODE)")
