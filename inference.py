@@ -203,7 +203,7 @@ def get_model_message(client: OpenAI, step: int, features: list[list[float]]) ->
             content = (completion.choices[0].message.content or "").strip()
             return _parse_llm_decisions(content, len(features))
         except Exception as exc:
-            print(f"[DEBUG] Model request failed: {exc}", flush=True)
+            print(f"[DEBUG] Model request failed: {exc}", file=sys.stderr, flush=True)
             time.sleep(1)
             
     fallback_decisions = []
@@ -257,7 +257,8 @@ def main() -> None:
 
             obs = env.step(action)
 
-            reward = float(obs.reward) if obs.reward is not None else 0.1
+            base_reward = float(obs.reward) if obs.reward is not None else 0.1
+            reward = float(max(0.01, min(0.99, base_reward)))
             done = obs.done
             error = None
 
