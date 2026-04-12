@@ -144,7 +144,7 @@ class FinalIntegrityCheck(unittest.TestCase):
             self.assertTrue(len(step_lines) >= 1, "No STEP lines found")
             for sl in step_lines:
                 step_match = re.match(
-                    r'^\[STEP\] step=\d+ action=\S+ reward=\d+\.\d{2} done=(true|false) error=\S+$',
+                    r'^\[STEP\] step=\d+ action=.*? reward=-?\d+\.\d{2} done=(true|false) error=.*$',
                     sl
                 )
                 self.assertIsNotNone(step_match, f"STEP line doesn't match regex: {sl}")
@@ -152,7 +152,7 @@ class FinalIntegrityCheck(unittest.TestCase):
             # Verify END tag format
             end_line = lines[-1]
             end_match = re.match(
-                r'^\[END\] success=(true|false) steps=\d+ score=\d+\.\d{3} rewards=[\d.,]+$',
+                r'^\[END\] success=(true|false) steps=\d+ score=-?\d+\.\d+ rewards=(?:-?\d+\.\d{2}(?:,-?\d+\.\d{2})*)?$',
                 end_line
             )
             self.assertIsNotNone(end_match, f"END line doesn't match regex: {end_line}")

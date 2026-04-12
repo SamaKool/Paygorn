@@ -115,7 +115,7 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
 
 def build_user_prompt(step: int, features: list[list[float]]) -> str:
@@ -294,7 +294,7 @@ def main() -> None:
         # Ensure absolutely no element is exactly 0.0 or 1.0 or outside the valid range.
         for i in range(len(rewards)):
             rewards[i] = float(max(0.01, min(0.99, rewards[i])))
-            
+        
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
