@@ -78,11 +78,11 @@ else:
 
 MAX_STEPS = int(os.getenv("MAX_STEPS", str(_DEFAULT_MAX)))
 TEMPERATURE = 0.0
-MAX_TOKENS = 1500
+MAX_TOKENS = 3000
 
 SYSTEM_PROMPT = """\
 You are a Wall Street Compliance Auditor AI embedded inside a High-Frequency Trading audit engine.
-You MUST think step-by-step in the 'reasoning' field before determining your action.
+You MUST think step-by-step in the 'reasoning' field before determining your action, but KEEP IT BRIEF (max 2 sentences total).
 
 ━━━ DECISION VALUES ━━━
 You must output ONLY raw integers (0 or 1) in the array. NO strings. NO labels.
