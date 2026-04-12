@@ -108,15 +108,12 @@ def log_start(task: str, env: str, model: str) -> None:
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
     done_val = str(done).lower()
-    print(
-        f"[STEP]  step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
-        flush=True,
-    )
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
 
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END]   success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
 
 def build_user_prompt(step: int, features: list[list[float]]) -> str:
@@ -212,7 +209,7 @@ def get_model_message(client: OpenAI, step: int, features: list[list[float]]) ->
         if len(row) >= 4:
             # Matches SYSTEM_PROMPT: 1 if > 0.60, 0 if < 0.30, 1 if in between.
             risk_score = row[3]
-            fallback_decisions.append(0 if risk_score < 0.30 else 1)
+            fallback_decisions.append(0.01 if risk_score < 0.30 else 0.99)
         else:
             fallback_decisions.append(1)
             

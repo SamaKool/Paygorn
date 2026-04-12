@@ -4,6 +4,7 @@ type: space
 runtime: fastapi
 app: server.app:app
 port: 7860
+entrypoint: server.fin_auditor_environment:FinAuditorEnvironment
 
 tasks:
   - id: anomaly_detection_easy

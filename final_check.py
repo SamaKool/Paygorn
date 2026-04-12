@@ -59,7 +59,7 @@ class FinalIntegrityCheck(unittest.TestCase):
             spec = yaml.safe_load(f)
         
         self.assertEqual(spec.get("app"), "server.app:app", "App entry point mismatch")
-        self.assertEqual(spec.get("port"), 8000, "Port mismatch")
+        self.assertEqual(spec.get("port"), 7860, "Port mismatch - HF requires 7860")
         
         tasks = spec.get("tasks", [])
         self.assertGreaterEqual(len(tasks), 3, "Missing required tasks (Easy, Medium, Hard)")
@@ -145,7 +145,7 @@ class FinalIntegrityCheck(unittest.TestCase):
             self.assertTrue(len(step_lines) >= 1, "No STEP lines found")
             for sl in step_lines:
                 step_match = re.match(
-                    r'^\[STEP\]\s+step=\d+ action=.*? reward=-?\d+\.\d{2} done=(true|false) error=.*$',
+                    r'^\[STEP\] step=\d+ action=.*? reward=-?\d+\.\d{2} done=(true|false) error=.*$',
                     sl
                 )
                 self.assertIsNotNone(step_match, f"STEP line doesn't match regex: {sl}")
@@ -153,7 +153,7 @@ class FinalIntegrityCheck(unittest.TestCase):
             # Verify END tag format
             end_line = lines[-1]
             end_match = re.match(
-                r'^\[END\]\s+success=(true|false) steps=\d+ score=-?\d+\.\d+ rewards=(?:-?\d+\.\d{2}(?:,-?\d+\.\d{2})*)?$',
+                r'^\[END\] success=(true|false) steps=\d+ score=-?\d+\.\d+ rewards=(?:-?\d+\.\d{2}(?:,-?\d+\.\d{2})*)?$',
                 end_line
             )
             self.assertIsNotNone(end_match, f"END line doesn't match regex: {end_line}")

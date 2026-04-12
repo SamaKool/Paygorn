@@ -105,16 +105,6 @@ public:
     anomaly_matrix_.resize(anomaly_capacity_ * 4, 0.0f);
     reward_details_.resize(reward_details_capacity_, 0.0f);
 
-    std::cout << "[C++] ReconciliationEngine initialized.\n"
-              << "      Pool capacity:    " << actual_cap << " slots ("
-              << (actual_cap * sizeof(TradeSlot)) / (1024 * 1024) << " MB)\n"
-              << "      Ring buffer:      " << RING_BUFFER_CAPACITY
-              << " slots ("
-              << (RING_BUFFER_CAPACITY * sizeof(RingEntry)) / (1024 * 1024)
-              << " MB)\n"
-              << "      Timer wheel:      3-level, 256 slots/level\n"
-              << "      Delta_max:        5.0 seconds\n"
-              << "      Risk score:       (counterparty_id % 100) / 100.0\n";
   }
 
   // ================================================================
