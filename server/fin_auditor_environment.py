@@ -11,30 +11,11 @@ Wraps the compiled C++ ``hft_auditor.ReconciliationEngine``.
 
 import os
 import sys
-import contextlib
 import glob
 import importlib.util
 from uuid import uuid4
 import numpy as np
 
-@contextlib.contextmanager
-def suppress_stdout():
-    """Silence low-level C-level stdout AND stderr (printf, std::cout, std::cerr) using fd redirection."""
-    with open(os.devnull, "w") as devnull:
-        # Save originals
-        old_stdout_fd = os.dup(1)
-        old_stderr_fd = os.dup(2)
-        # Redirect both
-        os.dup2(devnull.fileno(), 1)
-        os.dup2(devnull.fileno(), 2)
-        try:
-            yield
-        finally:
-            # Restore originals
-            os.dup2(old_stdout_fd, 1)
-            os.dup2(old_stderr_fd, 2)
-            os.close(old_stdout_fd)
-            os.close(old_stderr_fd)
 
 # ── Native Engine Bridge ─────────────────────────────────────────────────────
 def _load_native_engine():
@@ -75,8 +56,7 @@ def _load_native_engine():
         print(f"[CRITICAL] Native loading failed: {e}")
         return None
 
-with suppress_stdout():
-    hft_auditor = _load_native_engine()
+hft_auditor = _load_native_engine()
 # ─────────────────────────────────────────────────────────────────────────────
 
 from typing import Any, Dict, Optional
@@ -100,8 +80,7 @@ class FinAuditorEnvironment(Environment):
 
     def __init__(self) -> None:
         self._state = State(episode_id=str(uuid4()), step_count=0)
-        with suppress_stdout():
-            self.engine = hft_auditor.ReconciliationEngine(self._RING_BUFFER_CAPACITY)
+        self.engine = hft_auditor.ReconciliationEngine(self._RING_BUFFER_CAPACITY)
         self.sim_time_ns = 0
 
         # We default to HARD, but the actual routing happens in reset()
